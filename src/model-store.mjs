@@ -1,0 +1,162 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { randomUUID, randomBytes } from "node:crypto";
+import { templates } from "./provider-templates.mjs";
+
+export const defaultRoot = path.join(os.homedir(), ".codex/model-assistant");
+export const validID = (id) => typeof id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(id);
+
+export async function atomicJSON(file, value) {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  try {
+    await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+export function validateRoute(input) {
+  if (!validID(input.id)) throw new Error("模型标识无效");
+  const route = {};
+  for (const key of ["id", "name", "vendor", "endpoint", "protocol", "model", "notes", "docs", "credentialID"]) {
+    route[key] = String(input[key] ?? "").trim();
+    if (route[key].length > (key === "notes" ? 2000 : 500) || /[\u0000-\u001f]/.test(route[key])) throw new Error("字段过长或包含控制字符");
+  }
+  if (!route.name) throw new Error("请输入模型名称");
+  if (!["oauth", "responses", "chat", "anthropic"].includes(route.protocol)) throw new Error("不支持此接口协议");
+  if (route.protocol === "oauth" && route.id !== "official") throw new Error("ChatGPT 登录仅用于官方入口");
+  if (route.id === "official" && route.protocol !== "oauth") throw new Error("官方入口不能更换协议");
+  if (route.protocol === "oauth" && !["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"].includes(route.model)) throw new Error("ChatGPT 登录入口仅允许官方模型；第三方模型请使用供应商模板");
+  if (route.protocol !== "oauth") {
+    let url;
+    try { url = new URL(route.endpoint); } catch { throw new Error("请输入有效的服务地址"); }
+    const local = /^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(url.hostname);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) throw new Error("远程服务必须使用 HTTPS；本机和局域网允许 HTTP");
+    if (url.username || url.password || url.search || url.hash) throw new Error("地址不能包含密码、查询参数或片段");
+    route.endpoint = url.href.replace(/\/$/, "");
+  }
+  if (route.docs && !route.docs.startsWith("https://")) throw new Error("文档地址必须使用 HTTPS");
+  route.credentialID ||= route.id;
+  if (!validID(route.credentialID)) throw new Error("密钥标识无效");
+  route.noKey = Boolean(input.noKey);
+  route.archived = route.id === "official" ? false : Boolean(input.archived);
+  route.contextWindow = Number(input.contextWindow ?? 128000);
+  if (!Number.isInteger(route.contextWindow) || route.contextWindow < 4096 || route.contextWindow > 2000000) throw new Error("上下文长度应为 4096–2000000");
+  return route;
+}
+
+function seeds() {
+  const routes = [
+    { id: "official", name: "OpenAI · ChatGPT 登录", vendor: "OpenAI", model: "gpt-6-astra", protocol: "oauth", noKey: true },
+    ...templates.filter((entry) => entry.id !== "custom").map((entry) => ({ ...entry, id: entry.id === "deepseek" ? "deepseek-flash" : entry.id, vendor: entry.name, credentialID: entry.id })),
+    { id: "deepseek-pro", name: "DeepSeek Pro", vendor: "DeepSeek 官方", model: "deepseek-v4-pro", protocol: "responses", endpoint: "https://api.deepseek.com/v1", credentialID: "deepseek" },
+    { id: "agnes", name: "Agnes 2.5 Flash", vendor: "已有服务", model: "agnes-2.5-flash", protocol: "responses", endpoint: "http://127.0.0.1:18790/v1" },
+    { id: "s5090-qwen", name: "Qwen3.8 27B · 5090", vendor: "局域网 5090", model: "qwen3.8:27b-96k", protocol: "chat", endpoint: "http://127.0.0.1:18791/v1", noKey: true },
+    { id: "s5090-ornith", name: "Ornith 1.5 35B · 5090", vendor: "局域网 5090", model: "ornith-1.5:35b-96k", protocol: "chat", endpoint: "http://127.0.0.1:18791/v1", noKey: true },
+  ];
+  return { schemaVersion: 2, revision: 1, routes: routes.map(validateRoute) };
+}
+
+export class ModelStore {
+  constructor(root = defaultRoot) { this.root = root; this.file = path.join(root, "library.json"); }
+  async read() {
+    try {
+      const data = JSON.parse(await fs.readFile(this.file, "utf8"));
+      if (data.schemaVersion !== 2 || !Array.isArray(data.routes)) throw new Error("模型库版本不兼容");
+      data.routes = data.routes.map(validateRoute);
+      if (new Set(data.routes.map((route) => route.id)).size !== data.routes.length) throw new Error("模型库标识重复");
+      return data;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
+      const data = seeds();
+      try { await fs.writeFile(this.file, JSON.stringify(data, null, 2), { mode: 0o600, flag: "wx" }); }
+      catch (writeError) { if (writeError.code !== "EEXIST") throw writeError; return this.read(); }
+      return data;
+    }
+  }
+  async secret(id) {
+    if (!validID(id)) throw new Error("密钥标识无效");
+    try { return (await fs.readFile(path.join(this.root, "credentials", id), "utf8")).trim(); }
+    catch (error) { if (error.code !== "ENOENT") throw error; return ""; }
+  }
+  async writeSecret(id, secret) {
+    if (!validID(id) || typeof secret !== "string" || secret.length > 16000 || /[\r\n\0]/.test(secret)) throw new Error("密钥格式无效");
+    const directory = path.join(this.root, "credentials");
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fs.chmod(directory, 0o700);
+    const temporary = path.join(directory, `.${randomUUID()}`);
+    await fs.writeFile(temporary, secret.trim(), { mode: 0o600 });
+    await fs.rename(temporary, path.join(directory, id));
+  }
+  async route(id) {
+    const route = (await this.read()).routes.find((entry) => entry.id === id);
+    if (!route) throw new Error("模型不存在");
+    return route;
+  }
+  async publicData() {
+    const data = await this.read();
+    const routes = await Promise.all(data.routes.map(async (route) => {
+      let verifiedAt = null;
+      try {
+        const check = JSON.parse(await fs.readFile(path.join(this.root, "checks", `${route.id}.json`), "utf8"));
+        if (check.ok && check.model === route.model && check.endpoint === route.endpoint && check.protocol === route.protocol && check.credentialVersion === await this.credentialVersion(route.credentialID)) verifiedAt = check.testedAt;
+      } catch { }
+      return { ...route, hasKey: Boolean(await this.secret(route.credentialID)), verifiedAt };
+    }));
+    return { ...data, routes, templates };
+  }
+  async credentialVersion(id) {
+    if (!validID(id)) throw new Error("密钥标识无效");
+    try { return (await fs.stat(path.join(this.root, "credentials", id))).mtimeMs; }
+    catch (error) { if (error.code !== "ENOENT") throw error; return 0; }
+  }
+  async mutate(revision, operation) {
+    await this.read();
+    const lockPath = path.join(this.root, "library.lock");
+    let lock;
+    try { lock = await fs.open(lockPath, "wx", 0o600); }
+    catch (error) {
+      if (error.code === "EEXIST") throw new Error("另一窗口正在保存，请刷新后重试；异常退出后可检查模型库的 library.lock");
+      throw error;
+    }
+    try {
+      await lock.writeFile(String(process.pid));
+      const data = await this.read();
+      if (data.revision !== revision) throw new Error("配置已在另一窗口更新，请刷新后重试");
+      const next = await operation(structuredClone(data));
+      next.revision = data.revision + 1;
+      await atomicJSON(path.join(this.root, "backups", `library-${Date.now()}-${randomUUID()}.json`), data);
+      await atomicJSON(this.file, next);
+      return next;
+    } finally { await lock.close(); await fs.unlink(lockPath); }
+  }
+  async save(input, revision, secret, clearKey = false) {
+    const route = validateRoute(input);
+    return this.mutate(revision, async (data) => {
+      const prior = data.routes.find((entry) => entry.id === route.id);
+      const sharedElsewhere = data.routes.some((entry) => entry.id !== route.id && entry.credentialID === route.credentialID && entry.endpoint !== route.endpoint);
+      if (sharedElsewhere || (prior && prior.endpoint !== route.endpoint && prior.credentialID === route.credentialID)) {
+        route.credentialID = `key-${randomUUID()}`;
+      }
+      if (secret?.trim()) await this.writeSecret(route.credentialID, secret);
+      else if (clearKey) await this.writeSecret(route.credentialID, "");
+      const index = data.routes.findIndex((entry) => entry.id === route.id);
+      if (index >= 0) data.routes[index] = route;
+      else data.routes.push(route);
+      return data;
+    });
+  }
+  async token(id) {
+    if (!validID(id)) throw new Error("模型标识无效");
+    const directory = path.join(this.root, "tokens");
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, id);
+    try { await fs.writeFile(file, randomBytes(32).toString("hex"), { mode: 0o600, flag: "wx" }); }
+    catch (error) { if (error.code !== "EEXIST") throw error; }
+    return fs.readFile(file, "utf8");
+  }
+}

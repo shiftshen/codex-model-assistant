@@ -1,0 +1,6 @@
+build/
+release/
+.runtime-cache/
+output/
+.DS_Store
+*.bak-*

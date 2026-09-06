@@ -1,0 +1,16 @@
+export const templates = [
+  { id: "deepseek", name: "DeepSeek 官方", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "deepseek-v4-flash", docs: "https://api-docs.deepseek.com/guides/responses_api/" },
+  { id: "openai-api", name: "OpenAI API", endpoint: "https://api.openai.com/v1", protocol: "responses", model: "", docs: "https://platform.openai.com/docs/api-reference/responses" },
+  { id: "anthropic", name: "Anthropic Claude", endpoint: "https://api.anthropic.com/v1", protocol: "anthropic", model: "", docs: "https://platform.claude.com/docs/en/api/overview" },
+  { id: "gemini", name: "Google Gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai", protocol: "chat", model: "gemini-2.5-flash", docs: "https://ai.google.dev/gemini-api/docs/openai" },
+  { id: "qwen", name: "阿里云通义千问", endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1", protocol: "chat", model: "qwen-plus", docs: "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope" },
+  { id: "kimi", name: "Moonshot Kimi 国际", endpoint: "https://api.moonshot.ai/v1", protocol: "chat", model: "kimi-k2.6", docs: "https://platform.kimi.ai/docs/api/list-models" },
+  { id: "glm", name: "智谱 GLM", endpoint: "https://open.bigmodel.cn/api/paas/v4", protocol: "chat", model: "", docs: "https://docs.bigmodel.cn/cn/api/introduction" },
+  { id: "xai", name: "xAI Grok", endpoint: "https://api.x.ai/v1", protocol: "responses", model: "", docs: "https://api.x.ai/docs/" },
+  { id: "mistral", name: "Mistral", endpoint: "https://api.mistral.ai/v1", protocol: "chat", model: "mistral-large-latest", docs: "https://docs.mistral.ai/api" },
+  { id: "groq", name: "Groq", endpoint: "https://api.groq.com/openai/v1", protocol: "chat", model: "", docs: "https://console.groq.com/docs/openai" },
+  { id: "openrouter", name: "OpenRouter 聚合平台", endpoint: "https://openrouter.ai/api/v1", protocol: "chat", model: "", docs: "https://openrouter.ai/docs/api-reference/overview" },
+  { id: "ollama", name: "Ollama 本地", endpoint: "http://127.0.0.1:11434/v1", protocol: "chat", model: "", noKey: true, docs: "https://docs.ollama.com/api/openai-compatibility" },
+  { id: "lmstudio", name: "LM Studio 本地", endpoint: "http://127.0.0.1:1234/v1", protocol: "chat", model: "", noKey: true, docs: "https://lmstudio.ai/docs/developer/openai-compat" },
+  { id: "custom", name: "自定义兼容服务", endpoint: "", protocol: "responses", model: "", docs: "" },
+];
