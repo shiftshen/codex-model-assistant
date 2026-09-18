@@ -164,6 +164,17 @@ export async function readFallbackEvents(root, limit = 5) {
   }
 }
 
+// 新机器上第一个拦路虎往往是「Codex 本体还没装」。直接抛 fs.access 的 ENOENT，
+// 用户看到的是「ENOENT: no such file or directory, access '/Applications/Codex.app/...'」——
+// 既看不懂也不知道该装什么。这里换成一句人话，启动入口共用。
+async function requireCodexApp() {
+  try {
+    await fs.access(appBinary);
+  } catch {
+    throw new Error("没有找到 Codex.app（需要在 /Applications 下）。请先安装 Codex 的 Mac 版，再回来启动窗口。");
+  }
+}
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -532,7 +543,7 @@ export class ProductService {
     if (running.length) {
       return { official: true, reused: true, pid: running[0].pid, delivered: false, message: `官方 Codex 已经开着（PID ${running[0].pid}），已切到它，没有重复启动。` };
     }
-    await fs.access(appBinary);
+    await requireCodexApp();
     const environment = { ...process.env };
     // 关键：不能把助手窗口的变量带过去，否则开出来还是空资料。
     for (const name of ["CODEX_HOME", "CMA_ROUTE_TOKEN", "CODEX_ELECTRON_USER_DATA_PATH", "OPENAI_API_KEY", "OPENAI_BASE_URL", "AGNES_API_KEY", "DEEPSEEK_API_KEY"]) delete environment[name];
@@ -588,7 +599,7 @@ export class ProductService {
       };
     }
     const prepared = await this.prepare(id, options);
-    await fs.access(appBinary);
+    await requireCodexApp();
     const environment = { ...process.env, CODEX_HOME: prepared.homePath };
     delete environment.OPENAI_API_KEY;
     delete environment.OPENAI_BASE_URL;
@@ -771,7 +782,7 @@ export class ProductService {
     return { ...paths, table, chosen, globalState, imported, model, diskCleanup };
   }
   async spawnWindow(prepared) {
-    await fs.access(appBinary);
+    await requireCodexApp();
     // --user-data-dir 决定 Chromium 侧隔离；CODEX_ELECTRON_USER_DATA_PATH 让桌面端自己的状态也落在同一个窗口目录，
     // 二者同值（Codex 官方演示启动器就是这么做的）。
     const environment = {
