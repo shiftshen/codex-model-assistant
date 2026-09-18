@@ -24,6 +24,8 @@ import {
   removeWindow,
   updateWindow,
   windowPaths,
+  windowRootCandidates,
+  windowUserDataCandidates,
   windowsRootName,
 } from "./window-registry.mjs";
 import {
@@ -498,9 +500,12 @@ export class ProductService {
     const route = id ? await this.store.route(id) : null;
     if (route?.protocol === "oauth") return this.launchOfficial();
     const running = await this.runningWindows();
-    const target = [...running.keys()][0];
+    const registry = await readWindowRegistry(this.store.root);
+    // 优先切到「起始模型就是这个模型」的那个窗口；没有才退而用第一个开着的窗口。
+    const preferred = route ? registry.windows.find((entry) => entry.initialModel === route.id && running.has(entry.id)) : null;
+    const target = preferred?.id ?? [...running.keys()][0];
     if (target) {
-      const entry = findWindow(await readWindowRegistry(this.store.root), target);
+      const entry = findWindow(registry, target);
       const summary = await this.switchSummary();
       const window = summary.windows.find((item) => item.id === target) ?? null;
       const same = Boolean(route) && window?.initialModel === route.id;
@@ -552,7 +557,9 @@ export class ProductService {
       homePath: prepared.homePath,
       userDataPath: prepared.userDataPath,
       diskCleanup: prepared.diskCleanup,
-      message: (options.continueExisting ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。" : "已发送独立启动请求；同一模型会复用已有窗口。修改模型后请关闭该模型旧窗口再启动。") + cleaned,
+      message: (options.continueExisting
+        ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。"
+        : `已为「${prepared.route.name}」打开专用单模型窗口（PID ${child.pid}）：只跑这一个模型。想复用已有窗口，用「打开 Codex」。`) + cleaned,
     };
   }
   switchPaths() {
@@ -810,7 +817,7 @@ export class ProductService {
   // 关窗后还会剩下 reparent 到 init 的 crashpad 助手进程（命令行里的 --database 指向本窗口的 browser-data/Crashpad）。
   // 它们不占界面，但每开关一次就留下两个，多开重度使用会越积越多；标记精确到本窗口目录，不会误伤其它窗口。
   async sweepWindowHelpers(id) {
-    const marker = `--database=${windowPaths(this.store.root, id).userDataPath}/Crashpad`;
+    const markers = windowUserDataCandidates(this.store.root, id).map((dir) => `--database=${dir}/Crashpad`);
     let stdout = "";
     try {
       ({ stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 }));
@@ -819,7 +826,7 @@ export class ProductService {
     }
     let ended = 0;
     for (const line of String(stdout).split("\n")) {
-      if (!line.includes(marker)) continue;
+      if (!markers.some((marker) => line.includes(marker))) continue;
       const pid = Number(line.trim().split(/\s+/)[0]);
       if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || pid === process.ppid) continue;
       try {
@@ -857,8 +864,8 @@ export class ProductService {
   async assertWindowProcess(pid, id) {
     const command = await this.windowProcessCommand(pid);
     if (command === "") return false;
-    const expected = `--user-data-dir=${windowPaths(this.store.root, id).userDataPath}`;
-    if (!command.includes(expected)) throw new Error(`PID ${pid} 不是「${id}」窗口的进程，已取消操作（避免误伤其它窗口）`);
+    const expected = windowUserDataCandidates(this.store.root, id).map((dir) => `--user-data-dir=${dir}`);
+    if (!expected.some((flag) => command.includes(flag))) throw new Error(`PID ${pid} 不是「${id}」窗口的进程，已取消操作（避免误伤其它窗口）`);
     return true;
   }
   async deleteWindow(id) {

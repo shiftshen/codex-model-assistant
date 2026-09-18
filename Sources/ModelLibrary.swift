@@ -25,7 +25,7 @@ struct ManagedModel: Codable, Identifiable, Hashable {
     var icon: String { `protocol` == "oauth" ? "sparkles" : (noKey ? "desktopcomputer" : "network") }
     var color: Color { `protocol` == "oauth" ? .blue : (noKey ? .green : .indigo) }
     static func new() -> ManagedModel {
-        ManagedModel(id: "model-" + UUID().uuidString.lowercased(), name: "", vendor: "自定义", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "", notes: "", docs: "", credentialID: "", noKey: false, archived: false, contextWindow: 128000)
+        ManagedModel(id: "model-" + UUID().uuidString.lowercased(), name: "", vendor: "自定义", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "", notes: "", docs: "", credentialID: "", noKey: false, archived: false, contextWindow: 0)
     }
 }
 
@@ -227,7 +227,13 @@ final class LibraryViewModel: ObservableObject {
     // 本地入口只有这两条路由；这是路由身份，不是「默认把本地当主力」——默认主力由专家策略决定。
     static let localRouteIDs = ["s5090-ornith", "s5090-qwen"]
     func isLocal(_ model: ManagedModel) -> Bool { Self.localRouteIDs.contains(model.id) }
-    func isRunning(_ model: ManagedModel) -> Bool { localStatus?.runningInstances.contains(model.id) == true }
+    // 「这个模型是不是已经开着」：官方入口看官方 Codex 进程；其它模型看有没有窗口正跑着它
+    // （起始模型就是它），再加上本地实例的状态。以前只查本地实例，所以普通模型明明开着也不亮。
+    func isRunning(_ model: ManagedModel) -> Bool {
+        if model.`protocol` == "oauth" { return officialArchive?.officialRunning == true }
+        if localStatus?.runningInstances.contains(model.id) == true { return true }
+        return windows.contains { $0.running == true && $0.initialModel == model.id }
+    }
     func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
 
     // 管道读取结果：子进程的输出必须边跑边收，只等不读会在输出超过管道缓冲时两边一起卡死。

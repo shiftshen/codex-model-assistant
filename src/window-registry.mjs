@@ -25,6 +25,18 @@ export function windowPaths(root, id) {
   };
 }
 
+// 一个窗口的目录可能落在三个槽位里：多开的工作窗口在 windows-v1，单模型窗口在
+// instances-v2（没导入过原会话）或 continuations-v1（导入过）。只认 windows-v1 的话，
+// 单模型窗口会被判定成「不是这个窗口的进程」——表现就是点关闭没反应、关不掉。
+export function windowRootCandidates(root, id) {
+  if (id === legacyWindowID) return [path.join(root, "router-v1")];
+  return ["windows-v1", "continuations-v1", "instances-v2"].map((slot) => path.join(root, slot, id));
+}
+
+export function windowUserDataCandidates(root, id) {
+  return windowRootCandidates(root, id).map((base) => path.join(base, "browser-data"));
+}
+
 export function defaultWindowRegistry() {
   return {
     schemaVersion: 1,

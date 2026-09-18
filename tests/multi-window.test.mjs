@@ -201,3 +201,21 @@ test("模型自己的窗口已经在跑时，launch 只切过去，不重复启�
   assert.match(result.message, /已经开着/);
   assert.match(result.message, /没有重复启动/);
 });
+
+
+// 现场踩到的：单模型窗口（独立窗口/专用窗口）落在 continuations-v1 或 instances-v2，
+// 而守卫只认 windows-v1，于是判定成「不是这个窗口的进程」——用户点关闭没反应，窗口关不掉。
+test("单模型窗口落在 continuations-v1 / instances-v2 时同样能关", async (context) => {
+  const store = await fixture(context);
+  const service = new ProductService(store);
+  const root = store.root;
+  for (const slot of ["continuations-v1", "instances-v2", "windows-v1"]) {
+    service.windowProcessCommand = async () =>
+      `/Applications/Codex.app/Contents/MacOS/ChatGPT --user-data-dir=${root}/${slot}/deepseek-flash/browser-data`;
+    assert.equal(await service.assertWindowProcess(4242, "deepseek-flash"), true, `${slot} 槽位应被认出来`);
+  }
+  // 别的窗口的进程仍然要拒绝
+  service.windowProcessCommand = async () =>
+    `/Applications/Codex.app/Contents/MacOS/ChatGPT --user-data-dir=${root}/windows-v1/w2/browser-data`;
+  await assert.rejects(() => service.assertWindowProcess(4242, "deepseek-flash"), /不是「deepseek-flash」窗口的进程/);
+});

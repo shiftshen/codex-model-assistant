@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 
 struct ModelLibraryView: View {
+    // 标题栏的版本号从 bundle 读，别写死——写死过一次就变成「装的明明是新版，界面还显示旧版」。
+    private var bundleVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?" }
+
     @StateObject private var library = LibraryViewModel()
     @State private var editing: ManagedModel?
     @State private var renameTarget: WorkWindow?
@@ -209,7 +212,7 @@ struct ModelLibraryView: View {
                 Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Codex 模型助手").font(.headline)
-                    Text("MODEL ROUTER · 2.3").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text("MODEL ROUTER · \(bundleVersion)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                 }
             }.padding(.top, 8)
             TextField("搜索模型或供应商", text: $library.search).textFieldStyle(.roundedBorder)
@@ -421,7 +424,7 @@ struct ModelLibraryView: View {
                 Button("新建窗口") { Task { await library.newWindow(initial: model.id) } }.disabled(!model.ready || model.archived)
                     .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")
                 Menu {
-                    Button("独立窗口（单模型）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
+                    Button("专用单模型窗口（不复用已有窗口）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
                     if model.protocol != "oauth" {
                         Button("导入官方会话并继续") { Task { await library.perform("continue") } }.disabled(!model.ready || model.archived)
                     }
@@ -462,6 +465,7 @@ struct ModelLibraryView: View {
 
 @main
 struct CodexModelAssistantApp: App {
+
     var body: some Scene {
         WindowGroup { ModelLibraryView() }
             .defaultSize(width: 1050, height: 730)
