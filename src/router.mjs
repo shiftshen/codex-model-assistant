@@ -47,6 +47,7 @@ export function routerTableEntry(table, slug) {
 }
 
 export function modelInfo(route, slug, baseInstructions = "") {
+  const window = Number(route.contextWindow) > 0 ? Number(route.contextWindow) : 128000;
   return {
     slug,
     display_name: route.name,
@@ -61,8 +62,12 @@ export function modelInfo(route, slug, baseInstructions = "") {
     default_verbosity: null,
     apply_patch_tool_type: "freeform",
     truncation_policy: { mode: "tokens", limit: 10000 },
-    context_window: route.contextWindow,
-    effective_context_window_percent: 90,
+    context_window: window,
+    // Codex 自己会压缩：它按「context_window × effective_context_window_percent」算阈值，
+    // 到点就自动摘要、换新窗口继续，不需要外面替它压缩。
+    // 百分比对齐官方模型的 95；同时把阈值显式写出来，避免不同版本对空值默认值理解不一致。
+    effective_context_window_percent: 95,
+    auto_compact_token_limit: Math.floor(window * 0.95),
     experimental_supported_tools: [],
     input_modalities: ["text", "image"],
     supports_search_tool: false,

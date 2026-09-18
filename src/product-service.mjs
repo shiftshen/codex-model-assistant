@@ -542,6 +542,32 @@ export class ProductService {
   async windowRegistry() {
     return readWindowRegistry(this.store.root);
   }
+  // 把模型目录参数同步到每个窗口。目录只在开窗时生成，所以升级了参数（比如 Codex 自己的压缩阈值）
+  // 之后，老窗口不会自动生效；这条命令负责补齐，不必逼用户关掉正在用的窗口。
+  // 只写我们自己生成的 model-catalog.json，不碰任务库、不碰会话。
+  async refreshCatalogs() {
+    const data = await this.store.read();
+    const table = buildRouterTable(data.routes);
+    const targets = [{ id: legacyWindowID, home: windowPaths(this.store.root, legacyWindowID).homePath }];
+    for (const entry of (await readWindowRegistry(this.store.root)).windows) {
+      if (entry.id === legacyWindowID) continue;
+      targets.push({ id: entry.id, home: windowPaths(this.store.root, entry.id).homePath });
+    }
+    const running = new Set([...(await this.runningWindows()).keys()]);
+    const updated = [];
+    const skipped = [];
+    for (const target of targets) {
+      try { await fs.access(path.join(target.home, "state_5.sqlite")); }
+      catch (error) { if (error.code === "ENOENT") { skipped.push({ id: target.id, reason: "还没有任务库" }); continue; } throw error; }
+      await atomicJSON(path.join(target.home, "model-catalog.json"), routerCatalog(table, localCallers));
+      updated.push({ id: target.id, running: running.has(target.id), models: table.length });
+    }
+    return {
+      updated,
+      skipped,
+      message: `已把模型目录同步到 ${updated.length} 个窗口（其中 ${updated.filter((entry) => entry.running).length} 个正在运行，下次开新对话时生效）`,
+    };
+  }
   async prepareWindow(id, initial = "", { importHistory = false, model = "" } = {}) {
     if (!isValidWindowID(id)) throw new Error("窗口标识无效");
     const data = await this.store.read();

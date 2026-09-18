@@ -72,6 +72,8 @@ async function main() {
   if (command === "continue") return service.launch(id, { continueExisting: true });
   if (command === "switch-status") return service.switchSummary();
   if (command === "windows") return service.switchSummary();
+  // 把模型目录参数（含 Codex 自己的压缩阈值）同步到所有窗口，不必关掉正在用的窗口。
+  if (command === "refresh-catalogs") return service.refreshCatalogs();
   // 新窗口：每个窗口一份独立的 CODEX_HOME + 浏览器数据目录，可以同时开多个、各自换模型。
   if (command === "new-window") return service.createWindow(id || "");
   if (command === "open-window") return service.openWindow(id || legacyWindowID);

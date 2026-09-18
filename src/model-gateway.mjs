@@ -414,7 +414,10 @@ export function createGateway(store = new ModelStore(), options = {}) {
               error: {
                 code: "context_length_exceeded",
                 message: contextGuardMessage(route, guard.estimate, best),
-                type: "model_gateway_error",
+                // 用 Responses API 的标准错误形态：Codex 会把它识别成 context_window_exceeded，
+                // 走它自己的上下文处理，而不是当成网关故障。
+                type: "invalid_request_error",
+                param: null,
               },
             });
           }

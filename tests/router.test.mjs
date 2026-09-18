@@ -7,7 +7,7 @@ import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { ModelStore, validateRoute } from "../src/model-store.mjs";
 import { ProductService, renderRouterConfig, runningInstancesFromPS } from "../src/product-service.mjs";
-import { buildRouterTable, routerCatalog, routerTableEntry } from "../src/router.mjs";
+import { buildRouterTable, modelInfo, routerCatalog, routerTableEntry } from "../src/router.mjs";
 import { createGateway } from "../src/model-gateway.mjs";
 
 function route(id, model, extra = {}) {
@@ -433,4 +433,23 @@ test("改成可切换的条目窗口沿用原有环境令牌也能走切换路�
     body: JSON.stringify({ model: "deepseek-flash", input: "hi" }),
   });
   assert.equal(rejected.status, 401);
+});
+
+// Codex 自带压缩：它按模型的 context_window 与 effective_context_window_percent 决定何时压缩。
+// 目录里必须把这两个值给对，否则长会话不会自动摘要，只会一路撞窗口。
+test("模型目录把压缩参数给对，让 Codex 自己压缩", async (context) => {
+  const store = await fixture(context);
+  const data = await store.read();
+  const route = data.routes.find((entry) => entry.id === "deepseek-flash");
+  await store.save({ ...route, contextWindow: 1000000 }, data.revision);
+  const table = buildRouterTable((await store.read()).routes);
+  const catalog = routerCatalog(table);
+  const entry = catalog.models.find((model) => model.slug === "deepseek-flash");
+  assert.equal(entry.context_window, 1000000);
+  assert.equal(entry.effective_context_window_percent, 95, "对齐官方模型的 95%");
+  assert.equal(entry.auto_compact_token_limit, 950000, "压缩阈值要显式、且留出摘要空间");
+  // 不该出现「窗口未设就当成无限」的情况：没配的按 128K 兜底，压缩阈值随之变小
+  const fallback = modelInfo({ id: "x", name: "X", vendor: "V", model: "x", contextWindow: 0 }, "x");
+  assert.equal(fallback.context_window, 128000);
+  assert.equal(fallback.auto_compact_token_limit, 121600);
 });
