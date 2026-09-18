@@ -927,10 +927,12 @@ export class ProductService {
     // 磁盘也要出现在诊断里：副本堆到 30 GB 以上是这套多窗口机制最容易失控的地方。
     let diskLine = "磁盘：无法读取";
     try {
-      const plan = await cleanupPlan({ root: this.store.root, officialHome: sharedHome, runningIds: new Set([...(await this.runningWindows()).keys()]) });
+      const plan = await cleanupPlan({ root: this.store.root, officialHome: this.officialHome, runningIds: new Set([...(await this.runningWindows()).keys()]) });
       const usage = await diskUsage({ root: this.store.root, plan });
-      diskLine = `磁盘：助手目录 ${Math.round(usage.totalBytes / 1024 ** 3 * 10) / 10} GB，可回收 ${Math.round(usage.reclaimable / 1024 ** 3 * 10) / 10} GB（${plan.items.length} 个会话副本），系统剩余 ${usage.freeDiskPercent.toFixed(1)}%；官方库与 ${plan.keepOriginals.count} 条原件不动`;
-      if (plan.skipped.length) diskLine += `；${plan.skipped.map((entry) => entry.id).join("、")} 正在运行，关闭后再清`;
+      const gb = (bytes) => Math.round((bytes / 1024 ** 3) * 10) / 10;
+      diskLine = `磁盘：助手目录 ${gb(usage.totalBytes)} GB，可回收 ${gb(usage.reclaimable)} GB（${plan.items.length} 个会话副本 + ${plan.caches.length} 个缓存目录），系统剩余 ${usage.freeDiskPercent.toFixed(1)}%；官方库与 ${plan.keepOriginals.count} 条原件不动`;
+      // 正在运行的窗口现在要报出「关掉后还能回收多少」，只说「正在运行」用户没法判断值不值得关。
+      for (const entry of plan.skipped) diskLine += `；${entry.id} 正在运行，关闭后自动清理 ${gb(entry.bytes ?? 0)} GB`;
     } catch (error) {
       diskLine = `磁盘：读取失败（${error.message}）`;
     }
