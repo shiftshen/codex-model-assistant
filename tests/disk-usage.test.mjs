@@ -19,14 +19,14 @@ import {
 } from "../src/disk-cleanup.mjs";
 import { parseOfficialRunning } from "../src/product-service.mjs";
 import { defaultDiskPolicy, readDiskPolicy, saveDiskPolicy } from "../src/disk-policy.mjs";
-import { isWindowsTest, sqliteTestBinary, tarTestBinary } from "./test-platform.mjs";
+import { isWindowsTest, sqliteAsync, sqliteTestBinary, tarTestBinary } from "./test-platform.mjs";
 
 const execFileAsync = promisify(execFile);
 const sqliteBinary = sqliteTestBinary;
 
 async function sqlite(dbPath, sql) {
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  await execFileAsync(sqliteBinary, [dbPath, sql]);
+  await sqliteAsync(dbPath, sql);
 }
 
 // 造一条会话：state_5 的 threads 行 + 任务库行 + 真实 rollout 文件（带字节数，便于核对释放量）。

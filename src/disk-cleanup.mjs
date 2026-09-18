@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { atomicJSON } from "./model-store.mjs";
 import { legacyWindowID, windowPaths } from "./window-registry.mjs";
-import { isWindows, platformDiskRoot, sqliteExecutable, tarExecutable } from "./platform-runtime.mjs";
+import { isWindows, platformDiskRoot, runCommandWithInput, sqliteExecutable, tarExecutable } from "./platform-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const sqliteBinary = () => sqliteExecutable();
@@ -62,7 +62,7 @@ function quote(value) {
 
 export async function sqliteJSON(dbPath, sql) {
   try {
-    const { stdout } = await execFileAsync(sqliteBinary(), ["-cmd", ".timeout 10000", "-json", dbPath, sql], { maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await runCommandWithInput(sqliteBinary(), ["-cmd", ".timeout 10000", "-json", dbPath], sql, { maxBuffer: 64 * 1024 * 1024 });
     const text = String(stdout ?? "").trim();
     return text ? JSON.parse(text) : [];
   } catch (error) {
@@ -73,7 +73,7 @@ export async function sqliteJSON(dbPath, sql) {
 
 async function sqliteExec(dbPath, sql) {
   try {
-    await execFileAsync(sqliteBinary(), ["-cmd", ".timeout 10000", dbPath, sql], { maxBuffer: 16 * 1024 * 1024 });
+    await runCommandWithInput(sqliteBinary(), ["-cmd", ".timeout 10000", dbPath], sql, { maxBuffer: 16 * 1024 * 1024 });
   } catch (error) {
     const detail = String(error.stderr ?? "").trim() || error.message;
     throw new Error(`写入 ${path.basename(dbPath)} 失败：${detail}`);

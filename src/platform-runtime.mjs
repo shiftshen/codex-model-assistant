@@ -238,6 +238,57 @@ export async function linkSharedAsset(source, destination) {
   }
 }
 
+export function runCommandWithInput(executable, args, input = "", { maxBuffer = 32 * 1024 * 1024, env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch { }
+      reject(error);
+    };
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBuffer) return fail(new Error("子进程标准输出超过限制"));
+      stdout.push(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxBuffer) return fail(new Error("子进程错误输出超过限制"));
+      stderr.push(chunk);
+    });
+    child.once("error", fail);
+    child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      const result = {
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        code: code ?? 1,
+      };
+      if (result.code === 0) return resolve(result);
+      const error = new Error(result.stderr.trim() || `命令退出：${result.code}`);
+      error.code = result.code;
+      error.stdout = result.stdout;
+      error.stderr = result.stderr;
+      reject(error);
+    });
+    child.stdin.on("error", (error) => {
+      if (error.code !== "EPIPE") fail(error);
+    });
+    child.stdin.end(String(input ?? ""));
+  });
+}
+
 export function sqliteExecutable() {
   const override = String(process.env.CMA_SQLITE3 ?? "").trim();
   if (override) return override;
