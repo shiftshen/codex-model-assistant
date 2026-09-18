@@ -1,14 +1,30 @@
 import { ModelStore, atomicJSON, validID } from "./model-store.mjs";
 import path from "node:path";
+import os from "node:os";
 import { ProductService } from "./product-service.mjs";
 import { limitedJSON } from "./model-gateway.mjs";
 import { ExpertService } from "./expert-service.mjs";
 import { readExpertPolicy, saveExpertPolicy } from "./expert-policy.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
+import { applyCleanup, cleanupPlan, describePlan, diskUsage } from "./disk-cleanup.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
 const [command = "library", id] = process.argv.slice(2);
+
+// 官方库永远是权威、也只读：副本判定拿它当基准，清理绝不动它。
+function officialHome() {
+  return path.join(os.homedir(), ".codex");
+}
+
+export function humanBytes(bytes) {
+  const value = Number(bytes) || 0;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let index = 0;
+  let size = value;
+  while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+  return `${index === 0 ? size : size.toFixed(size >= 100 ? 0 : 1)} ${units[index]}`;
+}
 
 async function main() {
   if (command === "library") { await store.read(); await service.migrateSecrets(); return { ...(await store.publicData()), expertPolicy: await readExpertPolicy(store), localStatus: await service.localRuntimeStatus(), ...(await service.switchSummary()) }; }
@@ -63,6 +79,35 @@ async function main() {
   if (command === "delete-window") return service.deleteWindow(id);
   // 接管在跑但没登记进注册表的窗口（并发建窗时代可能留下的孤儿进程）。
   if (command === "adopt-window") return service.adoptWindows(id || "all");
+  // 磁盘治理：先看占用、再看计划，最后必须显式 --confirm 才真删。三件事拆开，避免误删。
+  if (command === "disk-usage" || command === "cleanup-plan" || command === "cleanup-apply") {
+    const root = store.root;
+    const runningIds = new Set([...(await service.runningWindows()).keys()]);
+    const build = () => cleanupPlan({ root, officialHome: officialHome(), runningIds });
+    const plan = await build();
+    if (command === "disk-usage" || command === "cleanup-plan") {
+      const disk = await diskUsage({ root, plan });
+      return {
+        disk,
+        cleanupPlan: describePlan(plan),
+        message: command === "disk-usage"
+          ? `助手目录占用 ${humanBytes(disk.totalBytes)}，其中可回收 ${humanBytes(disk.reclaimable)}；系统剩余 ${disk.freeDiskPercent.toFixed(1)}%`
+          : plan.items.length
+            ? `可回收 ${humanBytes(plan.reclaimBytes)}：${plan.items.length} 个会话副本（${plan.keepOriginals.count} 条原件保留、不删）`
+            : "没有可回收的会话副本",
+      };
+    }
+    const result = await applyCleanup({ root, plan, confirm: process.argv.includes("--confirm"), runningIds });
+    const after = await build();
+    return {
+      disk: await diskUsage({ root, plan: after }),
+      cleanup: result,
+      cleanupPlan: describePlan(after),
+      message: result.deletedThreads
+        ? `已删除 ${result.deletedThreads} 个会话副本、${result.deletedFiles} 个文件，释放 ${humanBytes(result.freedBytes)}；审计清单：${result.backupManifest}`
+        : "没有需要清理的内容",
+    };
+  }
   // 遗留入口：等价于打开「窗口 1」。
   if (command === "switch-window") return service.launchSwitchWindow(id || "");
   if (command === "import-history") return service.importHistory(id || "all");
