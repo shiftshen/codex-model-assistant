@@ -63,7 +63,13 @@ jobs:
         shell: powershell
         run: |
           $env:CMA_SQLITE3 = (Resolve-Path ".runtime-cache/windows/sqlite3.exe")
-          npm run win:dist
+          $output = @(& npm run win:dist 2>&1)
+          $output | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (($output | Select-Object -Last 50) -join " | ").Replace("%", "%25")
+            Write-Host "::error file=package.json,title=Windows packaging failed::$tail"
+            throw "electron-builder failed"
+          }
       - name: Verify artifacts
         shell: powershell
         run: |
