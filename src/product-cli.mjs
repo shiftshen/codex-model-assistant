@@ -87,26 +87,40 @@ async function main() {
   // 官方库已归档会话：删的是原件、不可恢复，所以只认 --confirm，且官方 Codex 在跑时直接拒绝。
   if (command === "cleanup-official-plan" || command === "cleanup-official-apply") {
     const home = officialHome();
-    const official = await officialArchivedPlan({ officialHome: home });
+    // --older-than <天>：连「没归档但超过 N 天」的旧会话一起清（风险更高，必须显式给天数）。
+    const olderIndex = process.argv.indexOf("--older-than");
+    const olderThanDays = olderIndex > 0 && Number(process.argv[olderIndex + 1]) > 0 ? Number(process.argv[olderIndex + 1]) : null;
+    // --archive <目录>：先打包再删，保底可恢复。
+    const archiveIndex = process.argv.indexOf("--archive");
+    const archiveDir = archiveIndex > 0 ? String(process.argv[archiveIndex + 1] ?? "") : "";
+    const official = await officialArchivedPlan({ officialHome: home, olderThanDays });
     const running = await service.officialCodexRunning();
     const officialArchive = { count: official.items.length, bytes: official.reclaimBytes, officialRunning: running.length > 0, runningDetail: running[0]?.args ?? "" };
     if (command === "cleanup-official-plan") {
       return {
         officialArchive,
-        officialSessions: { count: official.items.length, bytes: official.reclaimBytes, sample: official.items.slice(0, 10).map(({ id, title, bytes }) => ({ id, title, bytes })) },
+        officialSessions: {
+          count: official.items.length,
+          bytes: official.reclaimBytes,
+          olderThanDays,
+          byReason: official.items.reduce((acc, item) => { acc[item.reason] = (acc[item.reason] ?? 0) + 1; return acc; }, {}),
+          sample: official.items.slice(0, 10).map(({ id, title, bytes, reason }) => ({ id, title: String(title).slice(0, 60), bytes, reason })),
+        },
         message: official.items.length
-          ? `官方库有 ${official.items.length} 条已归档会话，可回收 ${humanBytes(official.reclaimBytes)}${officialArchive.officialRunning ? "；但官方 Codex 正在运行，请先退出官方窗口" : ""}`
-          : "官方库没有可清理的已归档会话",
+          ? `官方库可清理 ${official.items.length} 条会话，共 ${humanBytes(official.reclaimBytes)}${olderThanDays ? `（含超 ${olderThanDays} 天的旧会话）` : "（仅已归档）"}${officialArchive.officialRunning ? "；但官方 Codex 正在运行，请先退出官方窗口" : ""}`
+          : "官方库没有可清理的会话",
       };
     }
-    const result = await applyOfficialArchived({ root: store.root, officialHome: home, plan: official, confirm: process.argv.includes("--confirm"), officialRunning: running.length > 0 });
+    const result = await applyOfficialArchived({ root: store.root, officialHome: home, plan: official, confirm: process.argv.includes("--confirm"), officialRunning: running.length > 0, archiveDir });
     const after = await officialArchivedPlan({ officialHome: home });
     return {
       officialCleanup: result,
       officialArchive: { count: after.items.length, bytes: after.reclaimBytes, officialRunning: false },
       message: result.deletedThreads
-        ? `已删除官方库 ${result.deletedThreads} 条已归档会话、${result.deletedFiles} 个文件，释放 ${humanBytes(result.freedBytes)}（官方库目录 ${humanBytes(result.beforeBytes)} → ${humanBytes(result.afterBytes)}）；审计清单：${result.backupManifest}`
-        : "官方库没有需要清理的已归档会话",
+        ? `已删除官方库 ${result.deletedThreads} 条会话、${result.deletedFiles} 个文件，释放 ${humanBytes(result.freedBytes)}（官方库目录 ${humanBytes(result.beforeBytes)} → ${humanBytes(result.afterBytes)}）`
+          + `${result.archive ? `；已先打包 ${result.archive.count} 个文件到 ${result.archive.file}（${humanBytes(result.archive.bytes)}）` : ""}`
+          + `；审计清单：${result.backupManifest}`
+        : "官方库没有需要清理的会话",
     };
   }
   if (command === "set-disk-policy") {

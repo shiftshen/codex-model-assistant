@@ -421,12 +421,16 @@ export async function cleanupWindowOnLaunch({ root, officialHome, windowID, home
 // 这是唯一会改动 ~/.codex 的操作，和窗口副本清理性质不同：
 // 窗口里的副本删了还能从官方库再导入一份，官方库删了就没有第二份了（不可恢复）。
 // 所以三条硬规矩：必须显式确认、官方 Codex 没在运行时才允许、只清 archived=1。
-export async function officialArchivedPlan({ officialHome }) {
+// olderThanDays 为 null 时只选「已归档」；给了天数就再加「超过 N 天没动过」。
+// 后者删的是用户没归档、但很旧的历史，风险明显更高，所以调用方必须显式传天数。
+export async function officialArchivedPlan({ officialHome, olderThanDays = null, now = Date.now() }) {
   const index = await readThreadIndex(officialHome);
   if (!index) throw new Error(`官方任务库不可读：${path.join(officialHome, "state_5.sqlite")}`);
+  const cutoff = olderThanDays === null ? null : Math.floor(now / 1000) - olderThanDays * 86400;
   const items = [];
   for (const thread of index.values()) {
-    if (!thread.archived) continue;
+    const old = cutoff !== null && thread.updatedAt > 0 && thread.updatedAt < cutoff;
+    if (!thread.archived && !old) continue;
     items.push({
       windowID: "official",
       home: officialHome,
@@ -434,28 +438,63 @@ export async function officialArchivedPlan({ officialHome }) {
       title: thread.title,
       rolloutPath: thread.rolloutPath,
       bytes: await pathSize(thread.rolloutPath),
-      reason: "官方库 · 已归档",
+      reason: thread.archived ? "官方库 · 已归档" : `官方库 · 超 ${olderThanDays} 天`,
+      updatedAt: thread.updatedAt,
     });
   }
   return {
     kind: "official-archived",
     generatedAt: new Date().toISOString(),
     officialHome,
+    olderThanDays,
     items,
     reclaimBytes: items.reduce((sum, item) => sum + item.bytes, 0),
   };
 }
 
-export async function applyOfficialArchived({ root, officialHome, plan, confirm = false, officialRunning = false }) {
+// 原件删掉就没有第二份，所以「按时间清旧会话」默认先把 rollout 打包成一个 tar.gz 再删：
+// JSONL 压缩比通常 5–10 倍，占用大幅下降，但内容还在，日后能解包找回。
+export async function archiveRollouts({ items, archiveDir, officialHome, stamp = new Date().toISOString().replace(/[:.]/g, "-") }) {
+  await fs.mkdir(archiveDir, { recursive: true, mode: 0o700 });
+  const file = path.join(archiveDir, `official-archive-${stamp}.tar.gz`);
+  const root = path.resolve(officialHome);
+  // 存相对路径：解包出来直接就是 sessions/… 的原样结构，不用再猜绝对路径里的层级。
+  const list = items
+    .filter((item) => item.rolloutPath)
+    .map((item) => {
+      const resolved = path.resolve(item.rolloutPath);
+      return resolved.startsWith(root + path.sep) ? path.relative(root, resolved) : resolved;
+    });
+  if (!list.length) return null;
+  const listFile = path.join(archiveDir, `.list-${stamp}.txt`);
+  await fs.writeFile(listFile, list.join("\n") + "\n", { mode: 0o600 });
+  try {
+    await execFileAsync("/usr/bin/tar", ["-czf", file, "-C", root, "-T", listFile], { maxBuffer: 32 * 1024 * 1024 });
+  } finally {
+    await fs.rm(listFile, { force: true });
+  }
+  const bytes = await pathSize(file);
+  await fs.writeFile(`${file}.txt`, [
+    `来源官方库：${officialHome}`,
+    `条目数：${items.length}`,
+    `打包时间：${new Date().toISOString()}`,
+    "解包：tar -xzf 本文件 -C <目标目录>，得到原始 rollout .jsonl（可重新导入 Codex）",
+  ].join("\n") + "\n", { mode: 0o600 });
+  return { file, bytes, count: items.length };
+}
+
+export async function applyOfficialArchived({ root, officialHome, plan, confirm = false, officialRunning = false, archiveDir = "" }) {
   if (!confirm) throw new Error("官方库的会话没有第二份，删除不可恢复，必须显式确认后才能执行");
   if (officialRunning) throw new Error("官方 Codex 正在运行，拒绝清理官方库：请先退出官方窗口再试");
   if (!plan.items.length) return { deletedFiles: 0, deletedThreads: 0, freedBytes: 0, beforeBytes: 0, afterBytes: 0, backupManifest: null };
+  const archive = archiveDir ? await archiveRollouts({ items: plan.items, archiveDir, officialHome }) : null;
   const manifest = await writeAuditManifest(root, plan, undefined, { kind: "official-archived" });
   const purged = await purgeThreads(officialHome, plan.items);
   return {
     deletedFiles: purged.deletedFiles,
     deletedThreads: plan.items.length,
     freedBytes: purged.freedBytes,
+    archive,
     beforeBytes: purged.beforeBytes,
     afterBytes: purged.afterBytes,
     backupManifest: manifest,

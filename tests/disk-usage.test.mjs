@@ -424,3 +424,57 @@ test("官方实例判定：只有命令行里完全没提助手目录的 Codex �
   assert.deepEqual(found.map((entry) => entry.pid), [101]);
   assert.equal(parseOfficialRunning(ps.replace("  101 /Applications/Codex.app/Contents/MacOS/ChatGPT\n", ""), "/Users/x/.codex/model-assistant").length, 0);
 });
+
+// 按时间清官方库旧会话：风险更高，所以必须显式给天数，并且默认先打包归档再删。
+test("官方库按时间清理：选出超期旧会话，先打包归档再删，归档里能解回原文", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  const now = Date.now();
+  const fresh = Math.floor(now / 1000);
+  const ancient = Math.floor(now / 1000) - (staleDays + 5) * 86400;
+  const archived = await addThread({ home: officialHome, id: "arch-1", bytes: 2048, updatedAt: fresh, archived: 1, title: "已归档" });
+  const old = await addThread({ home: officialHome, id: "old-1", bytes: 4096, updatedAt: ancient, title: "很旧但没归档" });
+  const recent = await addThread({ home: officialHome, id: "new-1", bytes: 1024, updatedAt: fresh, title: "新的" });
+
+  // 不给天数时只清已归档
+  const archivedOnly = await officialArchivedPlan({ officialHome, now });
+  assert.deepEqual(archivedOnly.items.map((item) => item.id), ["arch-1"]);
+  // 给了天数才把「没归档但很旧」的算进来
+  const withAge = await officialArchivedPlan({ officialHome, olderThanDays: staleDays, now });
+  assert.deepEqual(withAge.items.map((item) => item.id).sort(), ["arch-1", "old-1"]);
+  const reasons = Object.fromEntries(withAge.items.map((item) => [item.id, item.reason]));
+  assert.equal(reasons["arch-1"], "官方库 · 已归档");
+  assert.equal(reasons["old-1"], `官方库 · 超 ${staleDays} 天`);
+
+  const archiveDir = path.join(root, "archive");
+  const plan = await officialArchivedPlan({ officialHome, olderThanDays: staleDays, now });
+  const result = await applyOfficialArchived({ root, officialHome, plan, confirm: true, archiveDir });
+  assert.equal(result.deletedThreads, 2);
+  assert.ok(result.archive, "应当生成归档包");
+  assert.equal(result.archive.count, 2);
+  assert.match(result.archive.file, /official-archive-.*\.tar\.gz$/);
+  assert.ok(result.archive.bytes > 0);
+  await assert.rejects(() => fs.access(archived), /ENOENT/);
+  await assert.rejects(() => fs.access(old), /ENOENT/);
+  await fs.access(recent);
+  assert.equal(await rowCount(path.join(officialHome, "state_5.sqlite"), "threads", "new-1", "id"), 1);
+
+  // 归档包能解出原始 rollout，且附了说明
+  await fs.access(`${result.archive.file}.txt`);
+  const extractDir = path.join(root, "extract");
+  await fs.mkdir(extractDir, { recursive: true });
+  await execFileAsync("/usr/bin/tar", ["-xzf", result.archive.file, "-C", extractDir]);
+  // 解包出来保持 sessions/ 原样结构，路径可预测
+  const restored = await fs.readdir(path.join(extractDir, "sessions"));
+  assert.deepEqual(restored.sort(), ["arch-1.jsonl", "old-1.jsonl"]);
+  assert.equal(await officialArchivedPlan({ officialHome, olderThanDays: staleDays, now }).then((p) => p.items.length), 0, "再次执行为空（幂等）");
+});
+
+test("归档包比原始 rollout 小（JSONL 压缩比），否则这套方案就不划算", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  const ancient = Math.floor(Date.now() / 1000) - (staleDays + 5) * 86400;
+  // 造一点像真实 rollout 的重复 JSON 文本
+  await addThread({ home: officialHome, id: "old-a", bytes: 200000, updatedAt: ancient });
+  const plan = await officialArchivedPlan({ officialHome, olderThanDays: staleDays });
+  const result = await applyOfficialArchived({ root, officialHome, plan, confirm: true, archiveDir: path.join(root, "archive") });
+  assert.ok(result.archive.bytes < plan.reclaimBytes, `归档 ${result.archive.bytes} 应小于原始 ${plan.reclaimBytes}`);
+});
