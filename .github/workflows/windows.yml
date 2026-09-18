@@ -99,4 +99,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --prerelease --title "Codex Model Assistant ${{ github.ref_name }}" --notes "Windows Preview: automated Windows x64 build. Core Node tests passed on windows-latest; real Microsoft Store/MSIX desktop behavior still requires user-machine validation."
           }
-          gh release upload "${{ github.ref_name }}" release-windows/*.exe release-windows/SHA256SUMS-windows.txt --clobber --repo "${{ github.repository }}"
+          $assets = @(
+            Get-ChildItem release-windows -Filter "*.exe" | Sort-Object Name | ForEach-Object { $_.FullName }
+          )
+          $assets += (Resolve-Path "release-windows/SHA256SUMS-windows.txt").Path
+          foreach ($asset in $assets) {
+            Write-Host "Uploading $asset"
+            gh release upload "${{ github.ref_name }}" "$asset" --clobber --repo "${{ github.repository }}"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to upload $asset" }
+          }
