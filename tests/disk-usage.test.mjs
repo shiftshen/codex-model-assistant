@@ -7,14 +7,17 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   applyCleanup,
+  applyOfficialArchived,
   cleanupFolder,
   cleanupPlan,
   cleanupWindowOnLaunch,
   describePlan,
   diskUsage,
+  officialArchivedPlan,
   staleDays,
   systemDisk,
 } from "../src/disk-cleanup.mjs";
+import { parseOfficialRunning } from "../src/product-service.mjs";
 import { defaultDiskPolicy, readDiskPolicy, saveDiskPolicy } from "../src/disk-policy.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -367,4 +370,57 @@ test("磁盘策略：读出来有默认值，保存时校验类型并递增版�
 
   await assert.rejects(() => saveDiskPolicy(store, { ...saved, pruneBrowserCache: "yes" }), /true 或 false/);
   await assert.rejects(() => saveDiskPolicy(store, { revision: 1, autoCleanupOnLaunch: true }), /true 或 false/);
+});
+
+// 官方库清理是唯一会动 ~/.codex 的操作：只清已归档、必须确认、官方在跑就拒绝。
+test("官方库清理：只删已归档会话，未归档的与窗口数据一律不动", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  const now = Math.floor(Date.now() / 1000);
+  const ancient = now - (staleDays + 5) * 86400;
+  const archivedFile = await addThread({ home: officialHome, id: "arch-1", bytes: 4096, updatedAt: now, archived: 1 });
+  const archivedOld = await addThread({ home: officialHome, id: "arch-old", bytes: 2048, updatedAt: ancient, archived: 1 });
+  const liveOld = await addThread({ home: officialHome, id: "live-old", bytes: 8192, updatedAt: ancient, archived: 0 });
+  const liveNew = await addThread({ home: officialHome, id: "live-new", bytes: 1024, updatedAt: now, archived: 0 });
+  // 窗口里放一份副本，清理官方库不应该碰它（那是另一件事）
+  const winHome = continuationHome(root, "deepseek-flash");
+  const windowCopy = await addThread({ home: winHome, id: "arch-1", bytes: 4096, updatedAt: now });
+
+  const plan = await officialArchivedPlan({ officialHome });
+  assert.deepEqual(plan.items.map((item) => item.id).sort(), ["arch-1", "arch-old"]);
+  assert.equal(plan.reclaimBytes, 4096 + 2048);
+  assert.ok(plan.items.every((item) => item.reason === "官方库 · 已归档"));
+
+  await assert.rejects(() => applyOfficialArchived({ root, officialHome, plan, confirm: false }), /不可恢复/);
+  await fs.access(archivedFile);
+  await assert.rejects(() => applyOfficialArchived({ root, officialHome, plan, confirm: true, officialRunning: true }), /官方 Codex 正在运行/);
+  await fs.access(archivedFile);
+
+  const result = await applyOfficialArchived({ root, officialHome, plan, confirm: true });
+  assert.equal(result.deletedThreads, 2);
+  assert.equal(result.deletedFiles, 2);
+  await assert.rejects(() => fs.access(archivedFile), /ENOENT/);
+  await assert.rejects(() => fs.access(archivedOld), /ENOENT/);
+  await fs.access(liveOld);
+  await fs.access(liveNew);
+  await fs.access(windowCopy);
+  assert.equal(await rowCount(path.join(officialHome, "state_5.sqlite"), "threads", "arch-1", "id"), 0);
+  assert.equal(await rowCount(path.join(officialHome, "state_5.sqlite"), "threads", "live-old", "id"), 1);
+  assert.equal(await rowCount(path.join(winHome, "state_5.sqlite"), "threads", "arch-1", "id"), 1, "窗口里的副本不受官方库清理影响");
+
+  const manifest = JSON.parse(await fs.readFile(result.backupManifest, "utf8"));
+  assert.equal(manifest.kind, "official-archived");
+  assert.equal(manifest.items.length, 2);
+  assert.equal((await officialArchivedPlan({ officialHome })).items.length, 0, "第二次没有可清的（幂等）");
+});
+
+test("官方实例判定：只有命令行里完全没提助手目录的 Codex 才算官方在跑", () => {
+  const ps = [
+    "  101 /Applications/Codex.app/Contents/MacOS/ChatGPT",
+    "  202 /Applications/Codex.app/Contents/MacOS/ChatGPT --user-data-dir=/Users/x/.codex/model-assistant/router-v1/browser-data",
+    "  303 /Applications/Codex.app/Contents/MacOS/ChatGPT --type=renderer --database=/Users/x/.codex/model-assistant/windows-v1/w2/browser-data/Crashpad",
+    "  404 /usr/sbin/other --user-data-dir=/tmp/nope",
+  ].join("\n");
+  const found = parseOfficialRunning(ps, "/Users/x/.codex/model-assistant");
+  assert.deepEqual(found.map((entry) => entry.pid), [101]);
+  assert.equal(parseOfficialRunning(ps.replace("  101 /Applications/Codex.app/Contents/MacOS/ChatGPT\n", ""), "/Users/x/.codex/model-assistant").length, 0);
 });

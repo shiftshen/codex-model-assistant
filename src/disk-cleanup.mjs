@@ -296,10 +296,11 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
   };
 }
 
-export async function writeAuditManifest(root, plan, stamp = new Date().toISOString().replace(/[:.]/g, "-")) {
+export async function writeAuditManifest(root, plan, stamp = new Date().toISOString().replace(/[:.]/g, "-"), { kind = "window-copies" } = {}) {
   const file = path.join(root, cleanupFolder, `${stamp}.json`);
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   await atomicJSON(file, {
+    kind,
     generatedAt: plan.generatedAt,
     appliedAt: new Date().toISOString(),
     reclaimBytes: plan.reclaimBytes,
@@ -307,6 +308,43 @@ export async function writeAuditManifest(root, plan, stamp = new Date().toISOStr
     caches: (plan.caches ?? []).map(({ windowID, slot, dir, relative, bytes }) => ({ windowID, slot, dir, relative, bytes })),
   });
   return file;
+}
+
+// 「文件 → 行 → VACUUM」这条顺序单独抽出来：窗口副本和官方库归档会话删的是同一批表，
+// 分开写两份迟早会漂移（一份改了、另一份忘了改，就是静默的半删状态）。
+async function purgeThreads(home, items) {
+  const before = await directorySize(home);
+  let deletedFiles = 0;
+  for (const item of items) {
+    if (!item.rolloutPath) continue;
+    try {
+      await fs.rm(item.rolloutPath, { force: true });
+      deletedFiles += 1;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  const ids = items.map((item) => quote(item.id)).join(",");
+  await sqliteExec(path.join(home, "state_5.sqlite"), [
+    `delete from thread_attachments where thread_id in (${ids});`,
+    `delete from thread_dynamic_tools where thread_id in (${ids});`,
+    `delete from threads where id in (${ids});`,
+    "vacuum;",
+  ].join("\n"));
+  const history = path.join(home, "thread_history_1.sqlite");
+  try {
+    await fs.access(history);
+    await sqliteExec(history, [
+      `delete from thread_items where thread_id in (${ids});`,
+      `delete from thread_turns where thread_id in (${ids});`,
+      `delete from thread_realtime_items where thread_id in (${ids});`,
+      "vacuum;",
+    ].join("\n"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const after = await directorySize(home);
+  return { deletedFiles, freedBytes: Math.max(0, before - after), beforeBytes: before, afterBytes: after };
 }
 
 // 删除按「文件 → 行 → VACUUM」的顺序走。
@@ -337,38 +375,10 @@ export async function applyCleanup({ root, plan, confirm = false, runningIds = n
   let freedBytes = 0;
   const windows = [];
   for (const [home, group] of grouped) {
-    const before = await directorySize(home);
-    for (const item of group) {
-      if (!item.rolloutPath) continue;
-      try {
-        await fs.rm(item.rolloutPath, { force: true });
-        deletedFiles += 1;
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-    }
-    const ids = group.map((item) => quote(item.id)).join(",");
-    await sqliteExec(path.join(home, "state_5.sqlite"), [
-      `delete from thread_attachments where thread_id in (${ids});`,
-      `delete from thread_dynamic_tools where thread_id in (${ids});`,
-      `delete from threads where id in (${ids});`,
-      "vacuum;",
-    ].join("\n"));
-    const history = path.join(home, "thread_history_1.sqlite");
-    try {
-      await fs.access(history);
-      await sqliteExec(history, [
-        `delete from thread_items where thread_id in (${ids});`,
-        `delete from thread_turns where thread_id in (${ids});`,
-        `delete from thread_realtime_items where thread_id in (${ids});`,
-        "vacuum;",
-      ].join("\n"));
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    const after = await directorySize(home);
-    freedBytes += Math.max(0, before - after);
-    windows.push({ id: group[0].windowID, home, threads: group.length, beforeBytes: before, afterBytes: after });
+    const purged = await purgeThreads(home, group);
+    deletedFiles += purged.deletedFiles;
+    freedBytes += purged.freedBytes;
+    windows.push({ id: group[0].windowID, home, threads: group.length, beforeBytes: purged.beforeBytes, afterBytes: purged.afterBytes });
   }
   let deletedCacheDirs = 0;
   for (const item of caches) {
@@ -404,6 +414,51 @@ export async function cleanupWindowOnLaunch({ root, officialHome, windowID, home
     freedBytes: result.freedBytes,
     backupManifest: result.backupManifest,
     reasons: [...new Set(plan.items.map((item) => item.reason))],
+  };
+}
+
+// —— 官方库「已归档会话」清理 ——
+// 这是唯一会改动 ~/.codex 的操作，和窗口副本清理性质不同：
+// 窗口里的副本删了还能从官方库再导入一份，官方库删了就没有第二份了（不可恢复）。
+// 所以三条硬规矩：必须显式确认、官方 Codex 没在运行时才允许、只清 archived=1。
+export async function officialArchivedPlan({ officialHome }) {
+  const index = await readThreadIndex(officialHome);
+  if (!index) throw new Error(`官方任务库不可读：${path.join(officialHome, "state_5.sqlite")}`);
+  const items = [];
+  for (const thread of index.values()) {
+    if (!thread.archived) continue;
+    items.push({
+      windowID: "official",
+      home: officialHome,
+      id: thread.id,
+      title: thread.title,
+      rolloutPath: thread.rolloutPath,
+      bytes: await pathSize(thread.rolloutPath),
+      reason: "官方库 · 已归档",
+    });
+  }
+  return {
+    kind: "official-archived",
+    generatedAt: new Date().toISOString(),
+    officialHome,
+    items,
+    reclaimBytes: items.reduce((sum, item) => sum + item.bytes, 0),
+  };
+}
+
+export async function applyOfficialArchived({ root, officialHome, plan, confirm = false, officialRunning = false }) {
+  if (!confirm) throw new Error("官方库的会话没有第二份，删除不可恢复，必须显式确认后才能执行");
+  if (officialRunning) throw new Error("官方 Codex 正在运行，拒绝清理官方库：请先退出官方窗口再试");
+  if (!plan.items.length) return { deletedFiles: 0, deletedThreads: 0, freedBytes: 0, beforeBytes: 0, afterBytes: 0, backupManifest: null };
+  const manifest = await writeAuditManifest(root, plan, undefined, { kind: "official-archived" });
+  const purged = await purgeThreads(officialHome, plan.items);
+  return {
+    deletedFiles: purged.deletedFiles,
+    deletedThreads: plan.items.length,
+    freedBytes: purged.freedBytes,
+    beforeBytes: purged.beforeBytes,
+    afterBytes: purged.afterBytes,
+    backupManifest: manifest,
   };
 }
 

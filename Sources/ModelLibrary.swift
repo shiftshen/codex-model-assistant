@@ -70,6 +70,8 @@ struct ProductResponse: Decodable {
     var cleanupPlan: DiskPlan?
     var cleanup: CleanupResult?
     var diskPolicy: DiskPolicy?
+    var officialArchive: OfficialArchive?
+    var officialCleanup: OfficialCleanupResult?
 }
 
 // 磁盘占用与可回收量。助手目录里同一批会话会在每个窗口各存一份，是这套多窗口机制最容易失控的地方。
@@ -119,6 +121,20 @@ struct CleanupResult: Decodable {
     var deletedFiles: Int?
     var deletedThreads: Int?
     var deletedCacheDirs: Int?
+    var freedBytes: Int64?
+    var backupManifest: String?
+}
+
+// 官方库的已归档会话：删的是原件、不可恢复，所以单独一块、单独确认，不和窗口副本混在一起。
+struct OfficialArchive: Decodable {
+    var count: Int?
+    var bytes: Int64?
+    var officialRunning: Bool?
+}
+
+struct OfficialCleanupResult: Decodable {
+    var deletedThreads: Int?
+    var deletedFiles: Int?
     var freedBytes: Int64?
     var backupManifest: String?
 }
@@ -189,6 +205,8 @@ final class LibraryViewModel: ObservableObject {
     @Published var disk: DiskUsage?
     @Published var diskPlan: DiskPlan?
     @Published var diskPolicy: DiskPolicy?
+    @Published var officialArchive: OfficialArchive?
+    @Published var showOfficialConfirm = false
     @Published var showCleanupConfirm = false
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
@@ -279,6 +297,7 @@ final class LibraryViewModel: ObservableObject {
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
         if let value = response.diskPolicy { diskPolicy = value }
+        if let value = response.officialArchive { officialArchive = value }
         success = response.ok
     }
 
@@ -328,6 +347,21 @@ final class LibraryViewModel: ObservableObject {
             caches > 0 ? "\(caches) 个浏览器缓存目录" : nil,
         ].compactMap { $0 }.joined(separator: "、")
         return "将删除 \(parts.isEmpty ? "没有可清的内容" : parts)、释放 \(bytes)；官方库和 \(keep) 条窗口独有对话不受影响。被清掉的对话仍可用「导入全部」从官方库取回，缓存会在下次打开时自动重建。"
+    }
+
+    // 官方库的已归档会话：唯一会不可恢复地删掉原件的地方，所以文案必须把风险写清楚。
+    func applyOfficialCleanup() async {
+        busy = true
+        success = nil
+        message = "正在清理官方库的已归档会话（可能要一两分钟）…"
+        let response = await call(["cleanup-official-apply", "--confirm"], timeout: 3600)
+        accept(response)
+        busy = false
+    }
+
+    var officialCleanupPrompt: String {
+        let count = officialArchive?.count ?? 0
+        return "将从官方库删除 \(count) 条【已归档】会话，释放 \(humanBytes(officialArchive?.bytes))。这是原件、没有第二份，删除后不可恢复；未归档的会话一条都不会动。"
     }
 
     // 目录超过 20 GB 或系统剩余不足 15% 时提醒一次。

@@ -292,6 +292,12 @@ struct ModelLibraryView: View {
                     Text("\(caches.count) 个浏览器缓存可清 · \(humanBytes(caches.bytes))，下次打开自动重建")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+                if let official = library.officialArchive, let count = official.count, count > 0 {
+                    Text(official.officialRunning == true
+                         ? "官方库有 \(count) 条已归档会话（\(humanBytes(official.bytes))）；官方 Codex 正在运行，先退出它才能清"
+                         : "官方库有 \(count) 条已归档会话可清 · \(humanBytes(official.bytes))（原件，不可恢复）")
+                        .font(.caption2).foregroundStyle(official.officialRunning == true ? Color.secondary : Color.orange)
+                }
                 if let skipped = library.diskPlan?.skipped, !skipped.isEmpty {
                     // 一般只有一个窗口在跑，合成一段文本比 ForEach 更省事，也避免结果构建器里的重载歧义。
                     Text(skipped.map { "\($0.id) 正在运行：还有 \(humanBytes($0.bytes)) 等它关闭后自动清理" }.joined(separator: "\n"))
@@ -320,12 +326,26 @@ struct ModelLibraryView: View {
                     .buttonStyle(.bordered).disabled(library.busy || (library.disk?.reclaimable ?? 0) <= 0)
                     .help("删除各窗口里重复的会话副本与浏览器缓存，释放磁盘；官方库和窗口独有对话不动")
             }
+            if let official = library.officialArchive, let count = official.count, count > 0 {
+                Button { library.showOfficialConfirm = true } label: {
+                    Label("清理官方库已归档 (\(count))", systemImage: "archivebox").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(library.busy || official.officialRunning == true)
+                .help("只删官方库里【已归档】的会话，原件不可恢复；未归档的一条都不动")
+            }
         }
         .confirmationDialog("确认清理会话副本？", isPresented: $library.showCleanupConfirm, titleVisibility: .visible) {
             Button("删除并释放空间", role: .destructive) { Task { await library.applyCleanup() } }
             Button("取消", role: .cancel) { }
         } message: {
             Text(library.cleanupPrompt)
+        }
+        .confirmationDialog("确认删除官方库的已归档会话？", isPresented: $library.showOfficialConfirm, titleVisibility: .visible) {
+            Button("删除，且不可恢复", role: .destructive) { Task { await library.applyOfficialCleanup() } }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(library.officialCleanupPrompt)
         }
     }
 

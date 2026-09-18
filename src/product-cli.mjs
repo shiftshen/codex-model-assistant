@@ -6,7 +6,7 @@ import { limitedJSON } from "./model-gateway.mjs";
 import { ExpertService } from "./expert-service.mjs";
 import { readExpertPolicy, saveExpertPolicy } from "./expert-policy.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
-import { applyCleanup, cleanupPlan, describePlan, diskUsage } from "./disk-cleanup.mjs";
+import { applyCleanup, applyOfficialArchived, cleanupPlan, describePlan, diskUsage, officialArchivedPlan } from "./disk-cleanup.mjs";
 import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
 
 const store = new ModelStore();
@@ -84,6 +84,31 @@ async function main() {
   if (command === "prune-empty-projects") return service.pruneEmptyProjects({ dryRun: process.argv.includes("--dry-run") });
   // 磁盘策略：控制「窗口启动前自动清理不重要副本」和「顺手清浏览器缓存」两个开关。
   if (command === "disk-policy") return { diskPolicy: await readDiskPolicy(store), message: "磁盘策略已读取" };
+  // 官方库已归档会话：删的是原件、不可恢复，所以只认 --confirm，且官方 Codex 在跑时直接拒绝。
+  if (command === "cleanup-official-plan" || command === "cleanup-official-apply") {
+    const home = officialHome();
+    const official = await officialArchivedPlan({ officialHome: home });
+    const running = await service.officialCodexRunning();
+    const officialArchive = { count: official.items.length, bytes: official.reclaimBytes, officialRunning: running.length > 0, runningDetail: running[0]?.args ?? "" };
+    if (command === "cleanup-official-plan") {
+      return {
+        officialArchive,
+        officialSessions: { count: official.items.length, bytes: official.reclaimBytes, sample: official.items.slice(0, 10).map(({ id, title, bytes }) => ({ id, title, bytes })) },
+        message: official.items.length
+          ? `官方库有 ${official.items.length} 条已归档会话，可回收 ${humanBytes(official.reclaimBytes)}${officialArchive.officialRunning ? "；但官方 Codex 正在运行，请先退出官方窗口" : ""}`
+          : "官方库没有可清理的已归档会话",
+      };
+    }
+    const result = await applyOfficialArchived({ root: store.root, officialHome: home, plan: official, confirm: process.argv.includes("--confirm"), officialRunning: running.length > 0 });
+    const after = await officialArchivedPlan({ officialHome: home });
+    return {
+      officialCleanup: result,
+      officialArchive: { count: after.items.length, bytes: after.reclaimBytes, officialRunning: false },
+      message: result.deletedThreads
+        ? `已删除官方库 ${result.deletedThreads} 条已归档会话、${result.deletedFiles} 个文件，释放 ${humanBytes(result.freedBytes)}（官方库目录 ${humanBytes(result.beforeBytes)} → ${humanBytes(result.afterBytes)}）；审计清单：${result.backupManifest}`
+        : "官方库没有需要清理的已归档会话",
+    };
+  }
   if (command === "set-disk-policy") {
     const input = await limitedJSON(process.stdin, 16000);
     const saved = await saveDiskPolicy(store, input);
@@ -95,12 +120,22 @@ async function main() {
     const runningIds = new Set([...(await service.runningWindows()).keys()]);
     const build = () => cleanupPlan({ root, officialHome: officialHome(), runningIds });
     const plan = await build();
+    // 官方库的已归档会话单独算一份：它删的是原件、不可恢复，必须和窗口副本分开呈现、分开确认。
+    const official = await officialArchivedPlan({ officialHome: officialHome() });
+    const officialRunning = await service.officialCodexRunning();
+    const officialArchive = {
+      count: official.items.length,
+      bytes: official.reclaimBytes,
+      officialRunning: officialRunning.length > 0,
+      runningDetail: officialRunning[0]?.args ?? "",
+    };
     if (command === "disk-usage" || command === "cleanup-plan") {
       const disk = await diskUsage({ root, plan });
       return {
         disk,
         cleanupPlan: describePlan(plan),
         diskPolicy: await readDiskPolicy(store),
+        officialArchive,
         message: command === "disk-usage"
           ? `助手目录占用 ${humanBytes(disk.totalBytes)}，其中可回收 ${humanBytes(disk.reclaimable)}；系统剩余 ${disk.freeDiskPercent.toFixed(1)}%`
           : plan.items.length
@@ -123,6 +158,7 @@ async function main() {
       cleanup: result,
       cleanupPlan: describePlan(after),
       diskPolicy: await readDiskPolicy(store),
+      officialArchive,
       message: parts.length
         ? `已删除 ${parts.join("、")}，释放 ${humanBytes(result.freedBytes)}；审计清单：${result.backupManifest}${skippedNote}`
         : `没有需要清理的内容${skippedNote}`,

@@ -114,6 +114,21 @@ export function parseRunningWindows(output, root) {
   return found;
 }
 
+// 官方 Codex 是否在跑：命令行里带 Codex.app 主程序、且完全不提助手目录的，就是官方实例。
+// 助手自己开的窗口（含 crashpad 助手进程）命令行里一定有助手目录，所以不会被误判——
+// 误判成「官方在跑」会让我们白拒绝清理，误判成「没在跑」则会去动正在使用的官方库，两个方向都要防。
+export function parseOfficialRunning(output, root) {
+  const managedRoot = path.resolve(root);
+  const found = [];
+  for (const line of String(output ?? "").split("\n")) {
+    if (!/\/Codex\.app\/Contents\/MacOS\//.test(line)) continue;
+    if (line.includes(managedRoot)) continue;
+    const pid = Number((line.match(/^\s*(\d+)\s/) || [])[1]);
+    found.push({ pid: Number.isInteger(pid) ? pid : 0, args: line.trim().slice(0, 160) });
+  }
+  return found;
+}
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -136,6 +151,15 @@ export class ProductService {
       found.set(entry.id, entry.pid);
     }
     return found;
+  }
+  // 官方实例的进程列表：清理官方库前必须为空。
+  async officialCodexRunning() {
+    try {
+      const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 });
+      return parseOfficialRunning(stdout, this.store.root);
+    } catch {
+      return [];
+    }
   }
   // 跑着但不在注册表里的 windows-v1 窗口：并发建窗丢过记录时会留下这种孤儿，
   // 它们在任务管理器里占着内存，用户却在助手界面里看不到、也关不掉。
