@@ -423,6 +423,18 @@ final class LibraryViewModel: ObservableObject {
     }
 
     // 打开已有窗口。窗口正在运行时只提示，不会重复启动；起始模型用窗口记住的那个。
+    // 侧边栏点一个模型时的默认动作：官方入口开真官方；已经有窗口在跑就切到它，
+    // 只有确实没有窗口时才新建。每点一次多一个窗口是最容易被骂的体验。
+    func openCodex(_ id: String) async {
+        busy = true
+        success = nil
+        message = "正在打开 Codex…"
+        let response = await call(["open-codex", id])
+        accept(response)
+        raiseWindowIfNeeded(response.pid ?? response.window?.pid)
+        busy = false
+    }
+
     func openWindow(_ id: String) async {
         busy = true
         success = nil

@@ -161,3 +161,43 @@ test("清理窗口残留助手进程时只认本窗口目录，不误伤别的�
   assert.equal(await waitFor(() => !alive(mine.pid)), true, "w2 的助手必须被收掉");
   assert.equal(alive(other.pid), true, "w3 的助手不能被误杀");
 });
+
+
+// 用户的原话：「你每个模型点开都是新窗口了啊，这个体验很不好」。
+// 点模型是想换模型，不是想再开一个窗口——已经有窗口在跑就必须复用它。
+test("点一个第三方模型时复用已开着的窗口，不再新建", async (context) => {
+  const store = await fixture(context);
+  await withWindows(store);
+  const service = new ProductService(store);
+  service.runningWindows = async () => new Map([["w2", 4242]]);
+  const result = await service.openCodex("deepseek-flash");
+  assert.equal(result.reused, true);
+  assert.equal(result.delivered, false, "不应该启动新窗口");
+  assert.equal(result.pid, 4242);
+  assert.equal(result.window?.id, "w2");
+});
+
+// 官方入口点进去必须是官方那一个：默认资料、已登录、任务库是官方的。
+// 以前这里会给官方入口造一个空资料窗口，用户看到的是「欢迎使用 ChatGPT 桌面版」的新手引导。
+test("官方入口开的是真官方 Codex，不复用也不新建空资料窗口", async (context) => {
+  const store = await fixture(context);
+  const service = new ProductService(store);
+  service.officialCodexRunning = async () => [{ pid: 4242, args: "/Applications/Codex.app/Contents/MacOS/ChatGPT" }];
+  const result = await service.openCodex("official");
+  assert.equal(result.official, true);
+  assert.equal(result.reused, true);
+  assert.equal(result.pid, 4242);
+  // 不能留下 instances-v2/official 这种空资料窗口
+  await assert.rejects(() => fs.access(path.join(store.root, "instances-v2", "official", "codex-home")));
+});
+
+test("模型自己的窗口已经在跑时，launch 只切过去，不重复启动", async (context) => {
+  const store = await fixture(context);
+  const service = new ProductService(store);
+  service.runningWindows = async () => new Map([["deepseek-flash", 777]]);
+  const result = await service.launch("deepseek-flash");
+  assert.equal(result.reused, true);
+  assert.equal(result.pid, 777);
+  assert.match(result.message, /已经开着/);
+  assert.match(result.message, /没有重复启动/);
+});

@@ -70,6 +70,8 @@ async function main() {
   }
   if (command === "start-gateway") return service.startGateway();
   if (command === "launch") return service.launch(id);
+  // 侧边栏点一个模型：开着的窗口优先复用，官方入口开真官方。
+  if (command === "open-codex") return service.openCodex(id || "");
   if (command === "continue") return service.launch(id, { continueExisting: true });
   if (command === "switch-status") return service.switchSummary();
   if (command === "windows") return service.switchSummary();

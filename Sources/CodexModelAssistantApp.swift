@@ -416,8 +416,10 @@ struct ModelLibraryView: View {
                 Spacer()
                 Button("检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
                 Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived || model.protocol == "oauth").help("发送短测试请求，消耗少量供应商额度")
-                Button("在新窗口打开") { Task { await library.newWindow(initial: model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
-                    .help("新建一个独立 Codex 窗口，用这个模型作为起始模型；窗口里的全部模型都能在 Codex 顶部直接换")
+                Button("打开 Codex") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
+                    .help(model.protocol == "oauth" ? "打开官方 Codex：默认资料、你平时的登录状态和任务库" : "已经开着的窗口就切过去，没有窗口才新建。到 Codex 顶部的模型选择里换模型即可")
+                Button("新建窗口") { Task { await library.newWindow(initial: model.id) } }.disabled(!model.ready || model.archived)
+                    .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")
                 Menu {
                     Button("独立窗口（单模型）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
                     if model.protocol != "oauth" {

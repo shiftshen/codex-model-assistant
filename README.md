@@ -55,6 +55,7 @@ zsh scripts/package-release.sh
 - `src/model-store.mjs`：模型库、凭据、并发与输入校验。
 - `src/product-service.mjs`：发现、验证、实例准备、启动、诊断。
 - `src/session-transfer.mjs`：会话/项目元数据迁移——任务库合并、导入，以及 `.codex-global-state.json` 的侧边栏项目分组合并（只增不改、按目录去重、原子写入并备份）。
+- 官方入口：OpenAI · ChatGPT 登录 开的是**官方那一个** Codex（默认资料 + `~/.codex`，带着你的登录状态和任务库），不再给它造一个空资料窗口；点其它模型时**已经有窗口在跑就切过去**，只有确实没有窗口才新建。
 - `src/window-registry.mjs`：窗口注册表（`windows.json`）——窗口标识校验、槽位路径映射、新建编号与名称分配、原子写入 0600。
 - `src/disk-cleanup.mjs`：磁盘治理——副本判定（以官方库为权威）、浏览器缓存白名单、清理计划与执行、审计清单、启动前单窗口自动清理。
 - `src/disk-policy.mjs`：磁盘策略（启动前自动清理 / 清缓存两个开关），带类型校验与版本递增。

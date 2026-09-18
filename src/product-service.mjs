@@ -122,10 +122,15 @@ export function parseOfficialRunning(output, root) {
   const managedRoot = path.resolve(root);
   const found = [];
   for (const line of String(output ?? "").split("\n")) {
-    if (!/\/Codex\.app\/Contents\/MacOS\//.test(line)) continue;
+    // 必须是主程序本身：Helpers/、Codex (Service)、crashpad 这些子进程不算，
+    // 否则会得出「官方 Codex 正在运行」的假结论——用户点官方入口却什么也打不开。
+    if (!/\/Codex\.app\/Contents\/MacOS\/ChatGPT(\s|$)/.test(line)) continue;
+    // 带自定义资料目录的都是助手窗口，官方那一个是不带这个参数的。
+    if (line.includes("--user-data-dir=")) continue;
     if (line.includes(managedRoot)) continue;
     const pid = Number((line.match(/^\s*(\d+)\s/) || [])[1]);
-    found.push({ pid: Number.isInteger(pid) ? pid : 0, args: line.trim().slice(0, 160) });
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    found.push({ pid, args: line.trim().slice(0, 160) });
   }
   return found;
 }
@@ -468,7 +473,66 @@ export class ProductService {
         : `「${route.name}」已恢复单模型窗口：关闭这个窗口再启动即可。`,
     };
   }
+  // 官方入口（OpenAI · ChatGPT 登录）要开的必须是官方那一个：默认资料 + ~/.codex。
+  // 以前这里也给它造了一个窗口（CODEX_HOME 指向助手目录、--user-data-dir 指向空目录），
+  // 结果用户点进去看到的是「欢迎使用 ChatGPT 桌面版」的新手引导——登录状态和任务库全没了。
+  async launchOfficial() {
+    const running = await this.officialCodexRunning();
+    if (running.length) {
+      return { official: true, reused: true, pid: running[0].pid, delivered: false, message: `官方 Codex 已经开着（PID ${running[0].pid}），已切到它，没有重复启动。` };
+    }
+    await fs.access(appBinary);
+    const environment = { ...process.env };
+    // 关键：不能把助手窗口的变量带过去，否则开出来还是空资料。
+    for (const name of ["CODEX_HOME", "CMA_ROUTE_TOKEN", "CODEX_ELECTRON_USER_DATA_PATH", "OPENAI_API_KEY", "OPENAI_BASE_URL", "AGNES_API_KEY", "DEEPSEEK_API_KEY"]) delete environment[name];
+    const child = spawn(appBinary, [], { env: environment, stdio: "ignore", detached: true });
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开官方 Codex（默认资料）：就是你平时那个登录状态和任务库。" };
+  }
+
+  // 侧边栏点一个模型时的默认动作。原则：已经开着的窗口优先复用，只有确实没有窗口时才新建。
+  // 用户点模型是想换模型，不是想再开一个窗口；每点一次就多一个窗口，是最容易被骂的体验。
+  async openCodex(modelID = "") {
+    const id = String(modelID ?? "").trim();
+    const route = id ? await this.store.route(id) : null;
+    if (route?.protocol === "oauth") return this.launchOfficial();
+    const running = await this.runningWindows();
+    const target = [...running.keys()][0];
+    if (target) {
+      const entry = findWindow(await readWindowRegistry(this.store.root), target);
+      const summary = await this.switchSummary();
+      const window = summary.windows.find((item) => item.id === target) ?? null;
+      const same = Boolean(route) && window?.initialModel === route.id;
+      return {
+        ...summary,
+        window,
+        delivered: false,
+        reused: true,
+        pid: running.get(target),
+        message: same
+          ? `「${entry?.name ?? target}」已经开着，起始模型就是「${route.name}」（PID ${running.get(target)}），已切到它。`
+          : `已切到开着的「${entry?.name ?? target}」（PID ${running.get(target)}）。在 Codex 顶部的模型选择里点「${route?.name ?? "目标模型"}」就切过去了；想再开一个独立窗口，用侧边栏的「新建窗口」。`,
+      };
+    }
+    return this.createWindow(id);
+  }
+
   async launch(id, options = {}) {
+    const route = await this.store.route(id);
+    if (route?.protocol === "oauth") return this.launchOfficial();
+    // 这个模型的窗口已经在跑：切到它，而不是再开一个一模一样的。
+    const running = await this.runningWindows();
+    if (!options.continueExisting && running.has(id)) {
+      const paths = windowPaths(this.store.root, id);
+      return {
+        reused: true,
+        pid: running.get(id),
+        homePath: paths.homePath,
+        userDataPath: paths.userDataPath,
+        message: `「${route?.name ?? id}」的窗口已经开着（PID ${running.get(id)}），已切到它，没有重复启动。`,
+      };
+    }
     const prepared = await this.prepare(id, options);
     await fs.access(appBinary);
     const environment = { ...process.env, CODEX_HOME: prepared.homePath };
