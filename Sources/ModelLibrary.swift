@@ -73,6 +73,7 @@ struct ProductResponse: Decodable {
     var diskPolicy: DiskPolicy?
     var officialArchive: OfficialArchive?
     var officialCleanup: OfficialCleanupResult?
+    var threads: [LiveThread]?
 }
 
 // 磁盘占用与可回收量。助手目录里同一批会话会在每个窗口各存一份，是这套多窗口机制最容易失控的地方。
@@ -203,6 +204,39 @@ struct FallbackEvent: Decodable, Identifiable, Hashable {
     var id: String { "\(at)|\(fromName)|\(toName)" }
 }
 
+// 一个对话（thread）当前用的模型，以及这块钱从哪出。
+//
+// Codex 的模型是按对话存的，不是按窗口：窗口标题只代表「新开对话时的默认值」。
+// 所以同一个窗口里，旧对话会一直用它当初选的模型——「我明明在 opencode 窗口，
+// 怎么 DeepSeek 官方还在扣钱」就是这么来的。对账必须看对话，不能看窗口。
+struct ThreadBilling: Decodable, Hashable {
+    var kind: String
+    var label: String
+    var detail: String?
+}
+
+struct LiveThread: Decodable, Identifiable, Hashable {
+    var id: String
+    var title: String?
+    var cwd: String?
+    var model: String?
+    var providerID: String?
+    var scope: String?
+    var minutesAgo: Int?
+    var sizeBytes: Int64?
+    var billing: ThreadBilling?
+
+    // 界面上认的是「哪个目录、什么模型、钱从哪出」，标题常常还是空的。
+    var place: String {
+        guard let cwd, !cwd.isEmpty else { return scope ?? "?" }
+        return (cwd as NSString).lastPathComponent
+    }
+    var headline: String {
+        if let title, !title.isEmpty { return title }
+        return String(id.prefix(8))
+    }
+}
+
 struct UnmanagedWindow: Decodable, Identifiable, Hashable {
     let windowID: String
     let slot: String
@@ -242,6 +276,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var fallbacks: [FallbackEvent] = []
     @Published var recentRoutes: [RecentRoute] = []
     @Published var todayUsage: DayUsage?
+    @Published var liveThreads: [LiveThread] = []
     @Published var newWindowModel = ""
     @Published var disk: DiskUsage?
     @Published var diskPlan: DiskPlan?
@@ -361,6 +396,7 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.fallbacks { fallbacks = values }
         if let values = response.recentRoutes { recentRoutes = values }
         if let value = response.todayUsage { todayUsage = value }
+        if let values = response.threads { liveThreads = values }
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
         if let value = response.diskPolicy { diskPolicy = value }

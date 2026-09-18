@@ -8,6 +8,7 @@ import { applyCleanup, applyOfficialArchived, cleanupPlan, describePlan, diskUsa
 import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
 import { readRecentRoutes, readUsageReport } from "./product-service.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
+import { liveThreadRows } from "./thread-ledger.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -28,7 +29,19 @@ export function humanBytes(bytes) {
 }
 
 async function main() {
-  if (command === "library") { await store.read(); await service.migrateSecrets(); return { ...(await store.publicData()), diskPolicy: await readDiskPolicy(store), ...(await service.switchSummary()) }; }
+  if (command === "library") {
+    await store.read();
+    await service.migrateSecrets();
+    const data = await store.publicData();
+    return {
+      ...data,
+      diskPolicy: await readDiskPolicy(store),
+      ...(await service.switchSummary()),
+      // 「哪个对话在用哪个模型」：Codex 的模型是按对话存的，窗口标题不代表对话归属。
+      // 扫盘失败不该拖垮整个模型库，所以这里只降级成空列表。
+      threads: await liveThreadRows(store.root, data.routes).catch(() => []),
+    };
+  }
   if (command === "save") {
     const input = await limitedJSON(process.stdin, 1024 * 1024);
     await store.save(input.route, input.revision, input.key, input.clearKey);
@@ -82,6 +95,20 @@ async function main() {
       message: routes.length
         ? `最近 ${routes.length} 次请求：${Object.entries(hostCount).map(([h, n]) => `${h} ×${n}`).join("、")}`
         : "还没有记录（网关重启后才会开始记录）",
+    };
+  }
+  if (command === "live-threads") {
+    const minutes = Number(id) > 0 ? Number(id) : 30;
+    const rows = await liveThreadRows(store.root, (await store.read()).routes, { withinMinutes: minutes });
+    const lines = rows.map((row) => {
+      const where = row.cwd ? row.cwd.split("/").slice(-1)[0] : "?";
+      const who = row.title ? `「${row.title}」` : `(${row.id.slice(0, 8)})`;
+      return `${row.scope} · ${where} ${who} → ${row.model || "未知模型"}：${row.billing.label}`;
+    });
+    return {
+      ok: true,
+      threads: rows,
+      message: lines.join("\n") || `最近 ${minutes} 分钟没有活跃对话`,
     };
   }
   if (command === "continue") return service.launch(id, { continueExisting: true });

@@ -130,6 +130,7 @@ struct ModelLibraryView: View {
                     ForEach(library.windows) { window in windowCard(window) }
                     newWindowCard
                 }
+                liveThreadsSection
                 if let latest = library.fallbacks.first { fallbackBanner(latest) }
                 if !library.orphans.isEmpty { orphanRow }
                 if !library.unmanaged.isEmpty { unmanagedSection }
@@ -137,6 +138,70 @@ struct ModelLibraryView: View {
             .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    // 「钱正在从哪出去」。Codex 的模型是按对话记的，不是按窗口：一个窗口里的旧对话
+    // 会一直用它当初选的模型。所以常出现「窗口写着 opencode，另一个对话还在扣
+    // DeepSeek 官方」——这一块把每个对话的归属摊开，按扣费性质上色，花真金白银的
+    // 那类最扎眼。用户拿它跟两边后台对账，比任何解释都直接。
+    @ViewBuilder
+    private var liveThreadsSection: some View {
+        if !library.liveThreads.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "creditcard").font(.caption).foregroundStyle(.secondary)
+                    Text("正在跑的对话").font(.headline)
+                    Text("\(library.liveThreads.count) 个 · \(liveThreadSummary)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("模型是按对话记的：换窗口不等于换对话的模型。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                ForEach(library.liveThreads.prefix(6)) { thread in liveThreadRow(thread) }
+                if library.liveThreads.count > 6 {
+                    Text("还有 \(library.liveThreads.count - 6) 个对话在最近半小时内动过").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.2)))
+        }
+    }
+
+    private var liveThreadSummary: String {
+        var counts: [String: Int] = [:]
+        for thread in library.liveThreads {
+            let label = thread.billing?.label ?? "未知上游"
+            counts[label, default: 0] += 1
+        }
+        return counts.sorted { $0.value > $1.value }.map { "\($0.key) ×\($0.value)" }.joined(separator: "、")
+    }
+
+    private func liveThreadRow(_ thread: LiveThread) -> some View {
+        HStack(spacing: 9) {
+            Circle().fill(threadColor(thread)).frame(width: 7, height: 7)
+            Text(thread.place).font(.caption.weight(.semibold)).lineLimit(1).frame(width: 108, alignment: .leading)
+            Text(thread.headline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 6)
+            Text(thread.model ?? "未知模型")
+                .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+            Text(thread.billing?.label ?? "未知上游")
+                .font(.caption.weight(.semibold)).foregroundStyle(threadColor(thread)).lineLimit(1)
+            Text("\(thread.minutesAgo ?? 0) 分钟前").font(.caption2).foregroundStyle(.secondary)
+        }
+        .help("\(thread.scope ?? "") ｜ 目录 \(thread.cwd ?? "?") ｜ 模型 \(thread.model ?? "?") ｜ 费用：\(thread.billing?.label ?? "未知")（\(thread.billing?.detail ?? "")）")
+    }
+
+    // 按量计费的花的是真金白银，用橙色；订阅和包月额度是已经付过的，压成冷色。
+    private func threadColor(_ thread: LiveThread) -> Color {
+        switch thread.billing?.kind {
+        case "balance": return .orange
+        case "subscription": return .blue
+        case "quota": return .green
+        case "direct": return .purple
+        default: return .secondary
+        }
     }
 
     // 静默 fallback 花钱这件事必须显眼：用户选了订阅制的模型，
