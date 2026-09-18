@@ -47,7 +47,8 @@ jobs:
           Get-ChildItem tests -Filter "*.test.mjs" | Sort-Object Name | ForEach-Object {
             Write-Host ""
             Write-Host "=== Windows CI: $($_.Name) ==="
-            $output = @(& node --test $_.FullName 2>&1)
+            Write-Host "::notice file=tests/$($_.Name),title=Windows test start::$($_.Name)"
+            $output = @(& node --test --test-force-exit --test-timeout=45000 $_.FullName 2>&1)
             $output | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) {
               $failed += $_.Name
