@@ -12,9 +12,10 @@ import {
   repairProjectMetadata,
   snapshotConversations,
 } from "../src/session-transfer.mjs";
+import { sqliteSync } from "./test-platform.mjs";
 
 const route = { id: "deepseek-flash", model: "deepseek-flash" };
-const sql = (database, query) => execFileSync("/usr/bin/sqlite3", [database, query], { encoding: "utf8" }).trim();
+const sql = sqliteSync;
 async function fixture(context) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "cma-transfer-"));
   context.after(() => fs.rm(root, { recursive: true, force: true }));

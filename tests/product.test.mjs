@@ -11,6 +11,7 @@ import { createGateway, upstream, estimateTokens, contextBudget } from "../src/m
 import { staleDays } from "../src/disk-cleanup.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { sqliteTestBinary } from "./test-platform.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,7 +19,7 @@ const execFileAsync = promisify(execFile);
 async function seedThreads(home, entries) {
   const db = path.join(home, "state_5.sqlite");
   await fs.mkdir(path.dirname(db), { recursive: true });
-  await execFileAsync("/usr/bin/sqlite3", [db, [
+  await execFileAsync(sqliteTestBinary, [db, [
     "create table if not exists threads (id text primary key, rollout_path text, created_at integer, updated_at integer, source text, model_provider text, cwd text, title text, sandbox_policy text, approval_mode text, archived integer not null default 0, model text, reasoning_effort text);",
     "create table if not exists thread_attachments (thread_id text);",
     "create table if not exists thread_dynamic_tools (thread_id text);",
@@ -27,7 +28,7 @@ async function seedThreads(home, entries) {
     const file = path.join(home, "sessions", `${entry.id}.jsonl`);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, "x".repeat(entry.bytes ?? 64));
-    await execFileAsync("/usr/bin/sqlite3", [db, `insert or replace into threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode, archived, model) values ('${entry.id}', '${file}', ${entry.updatedAt}, ${entry.updatedAt}, 'cli', 'cma_router', '/tmp', '会话 ${entry.id}', 'danger-full-access', 'never', ${entry.archived ?? 0}, 'deepseek-flash');`]);
+    await execFileAsync(sqliteTestBinary, [db, `insert or replace into threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode, archived, model) values ('${entry.id}', '${file}', ${entry.updatedAt}, ${entry.updatedAt}, 'cli', 'cma_router', '/tmp', '会话 ${entry.id}', 'danger-full-access', 'never', ${entry.archived ?? 0}, 'deepseek-flash');`]);
   }
   return db;
 }

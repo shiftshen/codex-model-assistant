@@ -4,9 +4,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { atomicJSON } from "./model-store.mjs";
 import { legacyWindowID, windowPaths } from "./window-registry.mjs";
+import { isWindows, platformDiskRoot, sqliteExecutable, tarExecutable } from "./platform-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
-const sqliteBinary = "/usr/bin/sqlite3";
+const sqliteBinary = () => sqliteExecutable();
 
 // 30 天阈值、审计清单目录名、续接窗口槽位——都按 UI 与文档里的承诺固定下来。
 export const staleDays = 30;
@@ -61,7 +62,7 @@ function quote(value) {
 
 export async function sqliteJSON(dbPath, sql) {
   try {
-    const { stdout } = await execFileAsync(sqliteBinary, ["-cmd", ".timeout 10000", "-json", dbPath, sql], { maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await execFileAsync(sqliteBinary(), ["-cmd", ".timeout 10000", "-json", dbPath, sql], { maxBuffer: 64 * 1024 * 1024 });
     const text = String(stdout ?? "").trim();
     return text ? JSON.parse(text) : [];
   } catch (error) {
@@ -72,7 +73,7 @@ export async function sqliteJSON(dbPath, sql) {
 
 async function sqliteExec(dbPath, sql) {
   try {
-    await execFileAsync(sqliteBinary, ["-cmd", ".timeout 10000", dbPath, sql], { maxBuffer: 16 * 1024 * 1024 });
+    await execFileAsync(sqliteBinary(), ["-cmd", ".timeout 10000", dbPath, sql], { maxBuffer: 16 * 1024 * 1024 });
   } catch (error) {
     const detail = String(error.stderr ?? "").trim() || error.message;
     throw new Error(`写入 ${path.basename(dbPath)} 失败：${detail}`);
@@ -469,7 +470,7 @@ export async function archiveRollouts({ items, archiveDir, officialHome, stamp =
   const listFile = path.join(archiveDir, `.list-${stamp}.txt`);
   await fs.writeFile(listFile, list.join("\n") + "\n", { mode: 0o600 });
   try {
-    await execFileAsync("/usr/bin/tar", ["-czf", file, "-C", root, "-T", listFile], { maxBuffer: 32 * 1024 * 1024 });
+    await execFileAsync(tarExecutable(), ["-czf", file, "-C", root, "-T", listFile], { maxBuffer: 32 * 1024 * 1024 });
   } finally {
     await fs.rm(listFile, { force: true });
   }
@@ -502,21 +503,21 @@ export async function applyOfficialArchived({ root, officialHome, plan, confirm 
 }
 
 export async function systemDisk(mount = "/") {
-  try {
-    const { stdout } = await execFileAsync("/bin/df", ["-k", mount], { maxBuffer: 1024 * 1024 });
-    const line = String(stdout ?? "").trim().split("\n").at(-1) ?? "";
-    const columns = line.split(/\s+/);
-    const total = Number(columns[1]) * 1024;
-    const free = Number(columns[3]) * 1024;
-    const used = Number(columns[2]) * 1024;
-    // 分母必须用「1K-blocks」那一列，不能用 used + free：
-    // APFS 一个容器里多个卷共享空间，df 只报本卷已用，used + free 会远小于真实容量，
-    // 「剩余百分比」于是被算成 80% 这种假象，而真实只剩 10%。
-    if (Number.isFinite(total) && total > 0 && Number.isFinite(free)) {
-      return { totalBytes: total, usedBytes: used, freeBytes: free, freePercent: Math.min(100, (free / total) * 100) };
-    }
-  } catch { }
-  const stats = await fs.statfs(mount);
+  const target = isWindows ? await platformDiskRoot(mount) : mount;
+  if (!isWindows) {
+    try {
+      const { stdout } = await execFileAsync("/bin/df", ["-k", target], { maxBuffer: 1024 * 1024 });
+      const line = String(stdout ?? "").trim().split("\n").at(-1) ?? "";
+      const columns = line.split(/\s+/);
+      const total = Number(columns[1]) * 1024;
+      const free = Number(columns[3]) * 1024;
+      const used = Number(columns[2]) * 1024;
+      if (Number.isFinite(total) && total > 0 && Number.isFinite(free)) {
+        return { totalBytes: total, usedBytes: used, freeBytes: free, freePercent: Math.min(100, (free / total) * 100) };
+      }
+    } catch { }
+  }
+  const stats = await fs.statfs(target);
   const total = stats.blocks * stats.bsize;
   const free = stats.bavail * stats.bsize;
   return { totalBytes: total, usedBytes: (stats.blocks - stats.bfree) * stats.bsize, freeBytes: free, freePercent: total > 0 ? (free / total) * 100 : 100 };
@@ -525,6 +526,7 @@ export async function systemDisk(mount = "/") {
 // 本地 Time Machine 快照会钉住刚删掉的文件的磁盘块：清理报告说释放了 5 GB，
 // 但 df 一动不动，用户会以为清理坏了。删快照要管理员密码，所以这里只如实报数量。
 export async function localSnapshotCount() {
+  if (isWindows) return 0;
   try {
     const { stdout } = await execFileAsync("/usr/bin/tmutil", ["listlocalsnapshots", "/"], { timeout: 15000 });
     return String(stdout).split("\n").filter((line) => line.includes(".local")).length;

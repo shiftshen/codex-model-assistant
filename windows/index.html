@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codex Model Assistant</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Codex Model Assistant</h1>
+      <p id="subtitle">Windows Preview · 正在初始化</p>
+    </div>
+    <div class="toolbar">
+      <button id="refreshBtn">刷新</button>
+      <button id="diagBtn">诊断</button>
+      <button id="dataBtn">数据目录</button>
+      <button id="addBtn" class="primary">新增模型</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="status-card">
+      <div id="status" class="status">正在启动模型网关…</div>
+      <div id="usage" class="muted"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>窗口</h2>
+        <div>
+          <select id="newWindowModel"></select>
+          <button id="newWindowBtn">新建窗口</button>
+        </div>
+      </div>
+      <div id="windows" class="grid"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>最近活跃对话</h2>
+        <span class="muted">最近 30 分钟 · 按对话显示真实模型与计费来源</span>
+      </div>
+      <div id="threads" class="list"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>模型库</h2>
+        <label><input id="showArchived" type="checkbox"> 显示归档</label>
+      </div>
+      <div id="models" class="grid"></div>
+    </section>
+  </main>
+
+  <dialog id="modelDialog">
+    <form method="dialog" id="modelForm">
+      <div class="dialog-head">
+        <h2 id="dialogTitle">模型</h2>
+        <button value="cancel" class="icon-btn">×</button>
+      </div>
+      <input id="modelId" type="hidden">
+      <div class="form-grid">
+        <label>显示名称<input id="modelName" required maxlength="120"></label>
+        <label>供应商<input id="modelVendor" maxlength="120"></label>
+        <label>模型 ID<input id="modelModel" required maxlength="300"></label>
+        <label>接口格式
+          <select id="modelProtocol">
+            <option value="responses">Responses</option>
+            <option value="chat">Chat Completions</option>
+            <option value="anthropic">Anthropic Messages</option>
+            <option value="chatgpt">ChatGPT 官方登录</option>
+          </select>
+        </label>
+        <label class="wide">API 地址<input id="modelEndpoint" maxlength="500" placeholder="https://api.example.com/v1"></label>
+        <label class="wide">API Key<input id="modelKey" type="password" autocomplete="off" placeholder="留空保留现有 Key"></label>
+        <label>上下文<input id="modelContext" type="number" min="4096" max="2000000" step="1"></label>
+        <label>失败备用<select id="modelFallback"></select></label>
+        <label class="check"><input id="modelNoKey" type="checkbox"> 不需要 Key</label>
+        <label class="check"><input id="modelSwitchable" type="checkbox"> 此模型窗口允许切换模型</label>
+      </div>
+      <div class="dialog-actions">
+        <button value="cancel">取消</button>
+        <button id="saveModelBtn" value="default" class="primary">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Codex 模型助手
 
-原生 macOS 模型管理与 Codex 多开工具。安装应用位于 `/Applications/Codex 模型助手.app`。
+Codex 模型管理与多开工具。macOS 使用原生 SwiftUI；Windows Preview 使用 Electron 壳，两端复用同一套 Node 模型库、路由、网关、会话与磁盘治理核心。
 
 ## 当前发布版本
 
@@ -23,6 +23,16 @@ zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时
 
 兼容性验证记录见 `docs/COMPATIBILITY.md`。
 
+### Windows Preview
+
+Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11 x64。它不是把 Mac `.app` 改后缀，而是新增 Electron 桌面壳，并把原有核心中的进程发现、窗口关闭、SQLite、磁盘与共享资源行为抽成跨平台实现。
+
+- 依赖官方 ChatGPT/Codex Windows 桌面应用；自动通过 AppX/MSIX 清单发现，找不到时可用 `CMA_CODEX_DESKTOP` 指定可执行文件。
+- Windows 包自带 `sqlite3.exe`；窗口共享目录使用 NTFS junction，单文件优先 hard link，不要求管理员创建普通 symlink。
+- GitHub Actions 在 `windows-latest` 上运行 Node 回归测试并生成 NSIS 安装版与 portable `.exe`。
+- Windows Preview 暂无 Authenticode 代码签名证书，因此首次下载可能出现 Microsoft Defender SmartScreen 提示；这和应用内部功能是否正常是两回事。
+- Windows 自动化、打包和纯函数行为由 CI 验证；Microsoft Store/MSIX 客户端在不同机器上的真实 GUI 行为仍欢迎用户反馈。详细说明见 `windows/README.md`。
+
 ## 功能
 
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
@@ -33,7 +43,7 @@ zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时
 - 13 类供应商/本地服务模板及自定义模板；未配置凭据的条目明确显示待配置。
 - 连接检查、真实推理验证、带时间的验证记录；改 Key / 模型 / 地址 / 协议后失效。
 - 每个模型条目独立窗口、任务库和模型配置，多开不修改全局默认模型。
-- 窗口多开：任意数量窗口同时运行，每个窗口自带一份 `CODEX_HOME` 与浏览器数据目录（`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值），互不干扰，也和官方 Codex 的 Electron 状态完全隔离；窗口列表里可以新建、打开、关闭、重命名、删除，界面用 `ps` 真实命令行判定哪个窗口在跑（PID 一并显示）。
+- 窗口多开：任意数量窗口同时运行，每个窗口自带一份 `CODEX_HOME` 与浏览器数据目录（`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值），互不干扰，也和官方 Codex 的 Electron 状态完全隔离；窗口列表里可以新建、打开、关闭、重命名、删除，底层按平台读取真实进程命令行判定哪个窗口在跑（PID 一并显示）。
 - 无密钥 JSON 导入导出、原子配置写入、冲突检查、备份、诊断。
 - loopback 网关按实例令牌鉴权；Responses、Chat Completions、Anthropic Messages 三类接口。
 - 每个窗口都能换模型：窗口的 `config.toml` 指向网关的 `cma_router` 路由，Codex 顶部的模型选择就是全部可切换条目（官方登录与已归档模型不在其中），对话和任务库原地保留。窗口注册表 `windows.json` 记录名称与起始模型（槽位 `router` 沿用历史路径 `router-v1/`，新窗口放 `windows-v1/<id>/`），需要旧对话时再手动导入。
@@ -74,6 +84,8 @@ zsh scripts/package-release.sh
 ## 代码结构
 
 - `Sources/`：SwiftUI 模型库、编辑器、进程调用。
+- `windows/`：Windows Electron 主进程、受限 IPC preload 与本地 renderer；不复制业务核心，只调用同一个 `src/product-cli.mjs`。
+- `src/platform-runtime.mjs`：macOS / Windows 进程、桌面应用发现、进程树结束、SQLite/tar、共享资源链接等平台适配。
 - `src/model-store.mjs`：模型库、凭据、并发与输入校验。
 - `src/product-service.mjs`：发现、验证、实例准备、启动、诊断。
 - `src/session-transfer.mjs`：会话/项目元数据迁移——任务库合并、导入，以及 `.codex-global-state.json` 的侧边栏项目分组合并（只增不改、按目录去重、原子写入并备份）。
@@ -96,8 +108,9 @@ zsh scripts/package-release.sh
 | 项目 | 支持范围 |
 |---|---|
 | Mac 架构 | **通用二进制**：Apple Silicon（arm64）与 Intel（x86_64）同一份包；node 运行时两份都打包，按架构自动选 |
+| Windows Preview | **Windows 10/11 x64**；Electron + 同一套 Node 核心；GitHub `windows-latest` 自动测试与打包 |
 | 系统版本 | **macOS 12.0 起**（Monterey）。二进制里写的部署目标是 12.0，Info.plist 同步声明 12.0 |
-| 依赖 | 自带 Node 24 运行时，用户机器无需装 node；需要系统里已有 Codex.app |
+| 依赖 | macOS 自带 Node 24 运行时；Windows Electron 自带 Node runtime + sqlite3.exe；两端都需要系统里已有官方 ChatGPT/Codex 桌面应用 |
 
 说明：早期版本在 macOS 26 的机器上构建时没有指定 `-target`，二进制里被写成「最低要求 macOS 26」——
 Info.plist 写 14.0 也没用，老系统上根本加载不起来。现在 `build-app.sh` 显式指定 `-target <arch>-apple-macos12.0`，

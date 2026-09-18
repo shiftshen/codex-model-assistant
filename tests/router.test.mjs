@@ -6,9 +6,10 @@ import path from "node:path";
 import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { ModelStore, validateRoute } from "../src/model-store.mjs";
-import { ProductService, renderRouterConfig, runningInstancesFromPS } from "../src/product-service.mjs";
+import { ProductService, parseOfficialRunning, renderRouterConfig, runningInstancesFromPS } from "../src/product-service.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerTableEntry } from "../src/router.mjs";
 import { createGateway } from "../src/model-gateway.mjs";
+import { sqliteSync } from "./test-platform.mjs";
 
 function route(id, model, extra = {}) {
   return validateRoute({ id, name: `模型 ${id}`, vendor: "自定义", endpoint: "http://127.0.0.1:9/v1", protocol: "chat", model, noKey: true, ...extra });
@@ -26,7 +27,7 @@ async function listen(server, context) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-const sql = (database, query) => execFileSync("/usr/bin/sqlite3", [database, query], { encoding: "utf8" }).trim();
+const sql = sqliteSync;
 
 test("可切换窗口收录第三方模型并按模型名生成唯一标识", () => {
   const table = buildRouterTable([
@@ -102,6 +103,15 @@ test("按进程命令行识别正在运行的模型窗口与可切换窗口", ()
   assert.deepEqual(runningInstancesFromPS("", root), []);
   // 同一个窗口开多个进程只算一次
   assert.deepEqual(runningInstancesFromPS(output + "\n" + output, root), ["agnes", "deepseek-flash", "router"]);
+});
+
+test("Windows 反斜杠路径也能识别工作窗口，官方实例允许 exe 路径带引号", () => {
+  const root = "C:\\Users\\test\\.codex\\model-assistant";
+  const managed = `8124 \"C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\ChatGPT.exe\" --user-data-dir=C:\\Users\\test\\.codex\\model-assistant\\windows-v1\\w2\\browser-data`;
+  const official = `9001 \"C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\ChatGPT.exe\"`;
+  assert.deepEqual(runningInstancesFromPS(managed, root), ["w2"]);
+  assert.equal(parseOfficialRunning(managed, root).length, 0);
+  assert.equal(parseOfficialRunning(official, root)[0]?.pid, 9001);
 });
 
 test("工作窗口的合并来源排除已归档模型窗口，官方始终保留", async (context) => {

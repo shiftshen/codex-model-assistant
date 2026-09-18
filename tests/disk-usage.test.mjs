@@ -19,9 +19,10 @@ import {
 } from "../src/disk-cleanup.mjs";
 import { parseOfficialRunning } from "../src/product-service.mjs";
 import { defaultDiskPolicy, readDiskPolicy, saveDiskPolicy } from "../src/disk-policy.mjs";
+import { isWindowsTest, sqliteTestBinary, tarTestBinary } from "./test-platform.mjs";
 
 const execFileAsync = promisify(execFile);
-const sqliteBinary = "/usr/bin/sqlite3";
+const sqliteBinary = sqliteTestBinary;
 
 async function sqlite(dbPath, sql) {
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
@@ -235,7 +236,7 @@ test("磁盘治理：VACUUM 之后任务库文件确实变小", async (context) 
   assert.ok(after < before, `任务库应收缩：${before} -> ${after}`);
 });
 
-test("磁盘治理：剩余空间按容量算，APFS 上不能把 10% 报成 80%", async () => {
+test("磁盘治理：剩余空间按容量算，APFS 上不能把 10% 报成 80%", { skip: isWindowsTest }, async () => {
   const disk = await systemDisk("/");
   const { stdout } = await execFileAsync("/bin/df", ["-k", "/"]);
   const columns = String(stdout).trim().split("\n").at(-1).split(/\s+/);
@@ -462,7 +463,7 @@ test("官方库按时间清理：选出超期旧会话，先打包归档再删�
   await fs.access(`${result.archive.file}.txt`);
   const extractDir = path.join(root, "extract");
   await fs.mkdir(extractDir, { recursive: true });
-  await execFileAsync("/usr/bin/tar", ["-xzf", result.archive.file, "-C", extractDir]);
+  await execFileAsync(tarTestBinary, ["-xzf", result.archive.file, "-C", extractDir]);
   // 解包出来保持 sessions/ 原样结构，路径可预测
   const restored = await fs.readdir(path.join(extractDir, "sessions"));
   assert.deepEqual(restored.sort(), ["arch-1.jsonl", "old-1.jsonl"]);

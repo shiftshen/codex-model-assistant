@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { ModelStore, atomicJSON, validateRoute } from "./model-store.mjs";
 import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from "./model-gateway.mjs";
-import { cleanupPlan, cleanupWindowOnLaunch, diskUsage } from "./disk-cleanup.mjs";
+import { cleanupPlan, cleanupWindowOnLaunch, directorySize, diskUsage } from "./disk-cleanup.mjs";
 import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
@@ -34,9 +34,19 @@ import {
   repairProjectMetadata,
   snapshotConversations,
 } from "./session-transfer.mjs";
+import {
+  findCodexDesktopExecutable,
+  isWindows,
+  killGatewayProcesses,
+  linkSharedAsset,
+  normalizeProcessText,
+  processCommand as platformProcessCommand,
+  processListingText,
+  spawnCodexDesktop,
+  terminateProcessTree,
+} from "./platform-runtime.mjs";
 
 const sharedHome = path.join(os.homedir(), ".codex");
-const appBinary = "/Applications/Codex.app/Contents/MacOS/ChatGPT";
 const execFileAsync = promisify(execFile);
 
 function composeConfig(source, marker, { model, provider, catalogPath, name, baseURL }) {
@@ -85,13 +95,16 @@ export function runningInstancesFromPS(output, root) {
 // 解析出运行中的 Codex 进程属于哪个槽位：windows-v1/<id>、router-v1 由注册表管理，
 // instances-v2 / continuations-v1 是更早的「一个模型一个窗口」用法，不参与注册表比对。
 export function parseRunningSlots(output, root) {
-  const escapedRoot = path.resolve(root).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const normalizedOutput = normalizeProcessText(output);
+  const rawRoot = String(root ?? "");
+  const resolvedRoot = /^[A-Za-z]:[\\/]/.test(rawRoot) ? rawRoot : path.resolve(rawRoot);
+  const escapedRoot = normalizeProcessText(resolvedRoot).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
     `--user-data-dir=${escapedRoot}/(?:(instances-v2|continuations-v1|${windowsRootName})/([^/]+)|router-v1)/browser-data`,
   );
   const found = [];
   const seen = new Set();
-  for (const line of String(output ?? "").split("\n")) {
+  for (const line of normalizedOutput.split("\n")) {
     const match = line.match(pattern);
     if (!match) continue;
     const slot = match[1] ?? "router-v1";
@@ -118,12 +131,16 @@ export function parseRunningWindows(output, root) {
 // 助手自己开的窗口（含 crashpad 助手进程）命令行里一定有助手目录，所以不会被误判——
 // 误判成「官方在跑」会让我们白拒绝清理，误判成「没在跑」则会去动正在使用的官方库，两个方向都要防。
 export function parseOfficialRunning(output, root) {
-  const managedRoot = path.resolve(root);
+  const rawRoot = String(root ?? "");
+  const resolvedRoot = /^[A-Za-z]:[\\/]/.test(rawRoot) ? rawRoot : path.resolve(rawRoot);
+  const managedRoot = normalizeProcessText(resolvedRoot);
   const found = [];
-  for (const line of String(output ?? "").split("\n")) {
-    // 必须是主程序本身：Helpers/、Codex (Service)、crashpad 这些子进程不算，
-    // 否则会得出「官方 Codex 正在运行」的假结论——用户点官方入口却什么也打不开。
-    if (!/\/Codex\.app\/Contents\/MacOS\/ChatGPT(\s|$)/.test(line)) continue;
+  for (const original of String(output ?? "").split("\n")) {
+    const line = normalizeProcessText(original);
+    // 必须是主程序本身：macOS 的 ChatGPT 主程序，或 Windows Store/MSIX 的 ChatGPT/Codex.exe。
+    const macMain = /\/Codex\.app\/Contents\/MacOS\/ChatGPT(\s|$)/.test(line);
+    const windowsMain = /\/(ChatGPT|Codex)\.exe[\"']?(\s|$)/i.test(line);
+    if (!macMain && !windowsMain) continue;
     // 带自定义资料目录的都是助手窗口，官方那一个是不带这个参数的。
     if (line.includes("--user-data-dir=")) continue;
     if (line.includes(managedRoot)) continue;
@@ -168,11 +185,7 @@ export async function readFallbackEvents(root, limit = 5) {
 // 用户看到的是「ENOENT: no such file or directory, access '/Applications/Codex.app/...'」——
 // 既看不懂也不知道该装什么。这里换成一句人话，启动入口共用。
 async function requireCodexApp() {
-  try {
-    await fs.access(appBinary);
-  } catch {
-    throw new Error("没有找到 Codex.app（需要在 /Applications 下）。请先安装 Codex 的 Mac 版，再回来启动窗口。");
-  }
+  return findCodexDesktopExecutable();
 }
 
 // 网关每次请求都会写一条「走了谁」，这里读出来给界面用。
@@ -213,8 +226,7 @@ export class ProductService {
   // 窗口运行状态：id → pid（0 表示命令行里没有 pid，通常来自测试夹具）。
   async runningSlots() {
     try {
-      const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 });
-      return parseRunningSlots(stdout, this.store.root);
+      return parseRunningSlots(await processListingText(), this.store.root);
     } catch {
       return [];
     }
@@ -230,8 +242,7 @@ export class ProductService {
   // 官方实例的进程列表：清理官方库前必须为空。
   async officialCodexRunning() {
     try {
-      const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 });
-      return parseOfficialRunning(stdout, this.store.root);
+      return parseOfficialRunning(await processListingText(), this.store.root);
     } catch {
       return [];
     }
@@ -267,13 +278,8 @@ export class ProductService {
     const now = Date.now();
     if (now - unmanagedSizeCache.at > 30000) {
       try {
-        const { stdout } = await execFileAsync("/usr/bin/du", ["-sk", ...found.map((entry) => entry.root)], { maxBuffer: 8 * 1024 * 1024 });
         const map = new Map();
-        for (const line of String(stdout).split("\n")) {
-          const [kb, ...rest] = line.trim().split(/\s+/);
-          const target = rest.join(" ");
-          if (target && Number(kb) > 0) map.set(target, Number(kb) * 1024);
-        }
+        await Promise.all(found.map(async (entry) => map.set(entry.root, await directorySize(entry.root))));
         unmanagedSizeCache.at = now;
         unmanagedSizeCache.map = map;
       } catch { unmanagedSizeCache.at = now; }
@@ -393,9 +399,11 @@ export class ProductService {
     await this.gatewayHealth();
   }
   async restartGateway() {
-    try { await execFileAsync("/bin/launchctl", ["kickstart", "-k", `gui/${process.getuid()}/local.shift.codex-model-gateway`]); return; }
-    catch { }
-    try { await execFileAsync("/usr/bin/pkill", ["-f", "model-gateway.mjs"]); } catch { }
+    if (!isWindows) {
+      try { await execFileAsync("/bin/launchctl", ["kickstart", "-k", `gui/${process.getuid()}/local.shift.codex-model-gateway`]); return; }
+      catch { }
+    }
+    await killGatewayProcesses();
   }
   async startGateway() {
     let health = null;
@@ -515,7 +523,7 @@ export class ProductService {
       const sourcePath = path.join(sharedHome, name);
       try {
         await fs.access(sourcePath);
-        await fs.symlink(sourcePath, path.join(homePath, name));
+        await linkSharedAsset(sourcePath, path.join(homePath, name));
       } catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
     }
     await fs.mkdir(path.join(homePath, "memories"), { recursive: true, mode: 0o700 });
@@ -576,9 +584,7 @@ export class ProductService {
     const environment = { ...process.env };
     // 关键：不能把助手窗口的变量带过去，否则开出来还是空资料。
     for (const name of ["CODEX_HOME", "CMA_ROUTE_TOKEN", "CODEX_ELECTRON_USER_DATA_PATH", "OPENAI_API_KEY", "OPENAI_BASE_URL", "AGNES_API_KEY", "DEEPSEEK_API_KEY"]) delete environment[name];
-    const child = spawn(appBinary, [], { env: environment, stdio: "ignore", detached: true });
-    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    child.unref();
+    const child = await spawnCodexDesktop([], environment);
     return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开官方 Codex（默认资料）：就是你平时那个登录状态和任务库。" };
   }
 
@@ -636,9 +642,7 @@ export class ProductService {
     delete environment.DEEPSEEK_API_KEY;
     if (prepared.route.protocol !== "oauth") environment.CMA_ROUTE_TOKEN = await this.store.token(prepared.route.switchable ? routerID : id);
     else delete environment.CMA_ROUTE_TOKEN;
-    const child = spawn(appBinary, [`--user-data-dir=${prepared.userDataPath}`], { env: environment, stdio: "ignore", detached: true });
-    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    child.unref();
+    const child = await spawnCodexDesktop([`--user-data-dir=${prepared.userDataPath}`], environment);
     const cleaned = prepared.diskCleanup?.freedBytes
       ? ` 顺手清掉了 ${prepared.diskCleanup.deletedThreads} 个不重要副本和 ${prepared.diskCleanup.deletedCacheDirs} 个缓存目录，释放 ${(prepared.diskCleanup.freedBytes / 1024 ** 3).toFixed(1)} GB。`
       : "";
@@ -804,7 +808,7 @@ export class ProductService {
     await fs.rename(temporary, path.join(paths.homePath, "config.toml"));
     for (const name of ["auth.json", "skills", "plugins", "requirements.toml", "hooks.json"]) {
       const sourcePath = path.join(sharedHome, name);
-      try { await fs.access(sourcePath); await fs.symlink(sourcePath, path.join(paths.homePath, name)); }
+      try { await fs.access(sourcePath); await linkSharedAsset(sourcePath, path.join(paths.homePath, name)); }
       catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
     }
     await fs.mkdir(path.join(paths.homePath, "memories"), { recursive: true, mode: 0o700 });
@@ -826,9 +830,7 @@ export class ProductService {
     delete environment.OPENAI_BASE_URL;
     delete environment.AGNES_API_KEY;
     delete environment.DEEPSEEK_API_KEY;
-    const child = spawn(appBinary, [`--user-data-dir=${prepared.userDataPath}`], { env: environment, stdio: "ignore", detached: true });
-    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    child.unref();
+    const child = await spawnCodexDesktop([`--user-data-dir=${prepared.userDataPath}`], environment);
     return child.pid;
   }
   async createWindow(initial = "") {
@@ -913,20 +915,20 @@ export class ProductService {
   // 关窗后还会剩下 reparent 到 init 的 crashpad 助手进程（命令行里的 --database 指向本窗口的 browser-data/Crashpad）。
   // 它们不占界面，但每开关一次就留下两个，多开重度使用会越积越多；标记精确到本窗口目录，不会误伤其它窗口。
   async sweepWindowHelpers(id) {
-    const markers = windowUserDataCandidates(this.store.root, id).map((dir) => `--database=${dir}/Crashpad`);
+    const markers = windowUserDataCandidates(this.store.root, id).map((dir) => `--database=${normalizeProcessText(dir)}/Crashpad`);
     let stdout = "";
     try {
-      ({ stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 }));
+      stdout = await processListingText();
     } catch {
       return 0;
     }
     let ended = 0;
     for (const line of String(stdout).split("\n")) {
-      if (!markers.some((marker) => line.includes(marker))) continue;
+      if (!markers.some((marker) => normalizeProcessText(line).includes(marker))) continue;
       const pid = Number(line.trim().split(/\s+/)[0]);
       if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || pid === process.ppid) continue;
       try {
-        process.kill(pid, "SIGTERM");
+        await terminateProcessTree(pid);
         ended += 1;
       } catch { /* 已经自己退出了 */ }
     }
@@ -937,31 +939,20 @@ export class ProductService {
     if (!Number.isInteger(target) || target <= 0) throw new Error("窗口进程号无效，已取消关闭");
     if (target === process.pid || target === process.ppid) throw new Error("拒绝结束助手自身的进程");
     if (await this.windowProcessCommand(target) === "") return;
-    try {
-      // 窗口是 detached 启动的，进程组组长就是它自己：连同渲染/工具子进程一起结束，避免残留子进程占着 browser-data。
-      process.kill(-target, "SIGTERM");
-    } catch (error) {
-      if (!["ESRCH", "EPERM"].includes(error.code)) throw error;
-      process.kill(target, "SIGTERM");
-    }
+    await terminateProcessTree(target);
   }
   // 取进程命令行；进程已退出时返回空字符串（正常情况，不算错误）。
   async windowProcessCommand(pid) {
-    try {
-      const { stdout } = await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "args="], { maxBuffer: 1024 * 1024 });
-      return String(stdout).trim();
-    } catch (error) {
-      if (error.code === 1 || /no such process/i.test(String(error.stderr ?? ""))) return "";
-      throw error;
-    }
+    return platformProcessCommand(pid);
   }
   // 关窗前确认这个 PID 真的是目标窗口：命令行必须带该窗口自己的 --user-data-dir。
   // 多开时最怕「关一个结果全关」，所以这条校验不通过就直接拒绝动手。
   async assertWindowProcess(pid, id) {
     const command = await this.windowProcessCommand(pid);
     if (command === "") return false;
-    const expected = windowUserDataCandidates(this.store.root, id).map((dir) => `--user-data-dir=${dir}`);
-    if (!expected.some((flag) => command.includes(flag))) throw new Error(`PID ${pid} 不是「${id}」窗口的进程，已取消操作（避免误伤其它窗口）`);
+    const normalized = normalizeProcessText(command);
+    const expected = windowUserDataCandidates(this.store.root, id).map((dir) => `--user-data-dir=${normalizeProcessText(dir)}`);
+    if (!expected.some((flag) => normalized.includes(flag))) throw new Error(`PID ${pid} 不是「${id}」窗口的进程，已取消操作（避免误伤其它窗口）`);
     return true;
   }
   async deleteWindow(id) {
@@ -1148,7 +1139,7 @@ export class ProductService {
     let gateway = "未运行";
     try { await this.gatewayReady(); gateway = "正常"; } catch { }
     let installed = false;
-    try { await fs.access(appBinary); installed = true; } catch { }
+    try { await requireCodexApp(); installed = true; } catch { }
     const table = buildRouterTable(data.routes);
     const active = data.routes.filter((route) => !route.archived && route.protocol !== "oauth");
     const missingKey = active.filter((route) => !route.noKey && !route.hasKey).map((route) => route.name);

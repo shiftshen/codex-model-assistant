@@ -1,5 +1,7 @@
 build/
 release/
+release-windows/
+node_modules/
 .runtime-cache/
 output/
 .DS_Store

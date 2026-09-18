@@ -8,6 +8,7 @@ import { ModelStore } from "../src/model-store.mjs";
 import { ProductService } from "../src/product-service.mjs";
 import { toAnthropic, sanitizeAnthropicSchema } from "../src/protocol-adapter.mjs";
 import { readWindowRegistry, windowPaths, windowsRootName, writeWindowRegistry } from "../src/window-registry.mjs";
+import { isWindowsTest } from "./test-platform.mjs";
 
 async function fixture(context) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "cma-multi-"));
@@ -136,7 +137,7 @@ test("只有该窗口自己有进程时，ID 校验才通过（router 用 router
 
 // 关窗后 Codex 的 crashpad 助手会被 reparent 到 init，不受进程组信号影响，每开关一次留下两个。
 // 多开重度使用时这些进程会一直堆积，所以要按窗口目录精确收掉，同时不能碰别的窗口。
-test("清理窗口残留助手进程时只认本窗口目录，不误伤别的窗口", async (context) => {
+test("清理窗口残留助手进程时只认本窗口目录，不误伤别的窗口", { skip: isWindowsTest }, async (context) => {
   const store = await fixture(context);
   await withWindows(store);
   const service = new ProductService(store);

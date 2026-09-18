@@ -1,0 +1,64 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*-windows-preview*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install SQLite CLI
+        shell: powershell
+        run: |
+          choco install sqlite -y --no-progress
+          $sqlite = (Get-Command sqlite3.exe).Source
+          New-Item -ItemType Directory -Force .runtime-cache/windows | Out-Null
+          Copy-Item $sqlite .runtime-cache/windows/sqlite3.exe
+          .\.runtime-cache\windows\sqlite3.exe --version
+      - name: Install dependencies
+        run: npm ci
+      - name: Node tests on Windows
+        shell: powershell
+        run: |
+          $env:CMA_SQLITE3 = (Resolve-Path ".runtime-cache/windows/sqlite3.exe")
+          npm test
+      - name: Build Windows installers
+        shell: powershell
+        run: |
+          $env:CMA_SQLITE3 = (Resolve-Path ".runtime-cache/windows/sqlite3.exe")
+          npm run win:dist
+      - name: Verify artifacts
+        shell: powershell
+        run: |
+          Get-ChildItem release-windows
+          $files = Get-ChildItem release-windows -Filter "*.exe"
+          if ($files.Count -lt 2) { throw "Expected NSIS and portable exe artifacts" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Model-Assistant-Windows-x64
+          path: release-windows/*.exe
+          if-no-files-found: error
+      - name: Publish preview release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --prerelease --title "Codex Model Assistant ${{ github.ref_name }}" --notes "Windows Preview: automated Windows x64 build. Core Node tests passed on windows-latest; real Microsoft Store/MSIX desktop behavior still requires user-machine validation."
+          }
+          gh release upload "${{ github.ref_name }}" release-windows/*.exe --clobber --repo "${{ github.repository }}"

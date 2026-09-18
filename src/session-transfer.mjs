@@ -5,11 +5,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { atomicJSON, validID } from "./model-store.mjs";
+import { sqliteExecutable } from "./platform-runtime.mjs";
 
 const execute = promisify(execFile);
 const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
 async function sqlite(database, statement) {
-  return (await execute("/usr/bin/sqlite3", ["-cmd", ".timeout 10000", database, statement], { maxBuffer: 32 * 1024 * 1024 })).stdout.trim();
+  return (await execute(sqliteExecutable(), ["-cmd", ".timeout 10000", database, statement], { maxBuffer: 32 * 1024 * 1024 })).stdout.trim();
 }
 
 async function exists(target) {
