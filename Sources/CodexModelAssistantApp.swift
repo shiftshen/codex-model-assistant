@@ -4,6 +4,8 @@ import SwiftUI
 struct ModelLibraryView: View {
     @StateObject private var library = LibraryViewModel()
     @State private var editing: ManagedModel?
+    @State private var renameTarget: WorkWindow?
+    @State private var renameDraft = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -50,34 +52,40 @@ struct ModelLibraryView: View {
     private var switchWindow: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                Image(systemName: "arrow.triangle.2.circlepath").font(.title2).foregroundStyle(.tint)
+                Image(systemName: "macwindow.on.rectangle").font(.title2).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("可切换窗口").font(.title2.bold())
-                    Text("一个窗口装下全部第三方模型：在 Codex 里直接换模型，对话和任务库都留在原地。").font(.callout).foregroundStyle(.secondary)
+                    Text("窗口管理").font(.title2.bold())
+                    Text("每个窗口都是独立的 Codex 窗口，可以同时开多个；每个窗口里都能在 Codex 顶部直接换模型，对话不会丢。").font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if library.routerRunning {
-                    Text("已启动").font(.caption.weight(.semibold)).foregroundStyle(.green)
-                        .padding(.horizontal, 8).padding(.vertical, 4).background(Color.green.opacity(0.12), in: Capsule())
-                }
+                Text("\(library.windows.count) 个窗口 · 运行中 \(library.runningWindowCount)")
+                    .font(.caption.weight(.semibold)).foregroundStyle(library.runningWindowCount > 0 ? .green : .secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background((library.runningWindowCount > 0 ? Color.green : Color.secondary).opacity(0.12), in: Capsule())
             }
-            Text("可选 \(library.switchModels.count) 个模型（官方 ChatGPT 登录和已归档模型不在这里）。打开后，Codex 顶部的模型选择就是全部选项。")
-                .font(.caption).foregroundStyle(.secondary)
-            List(library.switchModels) { entry in
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(entry.name).font(.system(size: 13, weight: .semibold))
-                        Text("\(entry.model) · \(entry.vendor)").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                    }
+            ScrollView {
+                LazyVStack(spacing: 8) { ForEach(library.windows) { window in windowRow(window) } }
+            }
+            .frame(minHeight: 190)
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("新建窗口").font(.callout.weight(.semibold))
+                Text("新窗口按约定是空的（需要旧对话时用下面的导入）。起始模型只是打开时的默认值；窗口会记住它，之后在 Codex 里随时换。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Picker("起始模型", selection: $library.newWindowModel) {
+                        ForEach(library.switchModels) { entry in Text("\(entry.name) · \(entry.model)").tag(entry.id) }
+                    }.frame(maxWidth: 380)
+                    Button("新建窗口") { Task { await library.newWindow(initial: library.newWindowModel) } }
+                        .buttonStyle(.borderedProminent).disabled(library.busy || library.switchModels.isEmpty)
                     Spacer()
-                    Button("用这个打开") { Task { await library.launchSwitchWindow(initial: entry.id) } }
-                        .disabled(library.busy)
                 }
+                Text("可选 \(library.switchModels.count) 个模型（官方 ChatGPT 登录和已归档模型不在这里）。")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
-            .frame(minHeight: 220)
             VStack(alignment: .leading, spacing: 8) {
                 Text("把已有会话带进来").font(.callout.weight(.semibold))
-                Text("第一次使用前先打开一次切换窗口，让 Codex 建好任务库并退出，然后在这里导入。导入只新增副本，不会改动官方或其它模型窗口的会话。")
+                Text("先打开过窗口 1（内置），让 Codex 建好任务库并退出，再在这里导入。导入只新增副本，不会改动官方或其它模型窗口的会话。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Button("导入官方会话") { Task { await library.importHistory("shared") } }.disabled(library.busy)
@@ -89,10 +97,64 @@ struct ModelLibraryView: View {
             HStack {
                 Text(library.message).font(.caption).foregroundStyle(library.success == false ? .red : .secondary).lineLimit(3)
                 Spacer()
-                Button("关闭") { library.showSwitch = false }.keyboardShortcut(.cancelAction)
-                Button("打开工作窗口") { Task { await library.openWorkWindow() } }.buttonStyle(.borderedProminent).disabled(library.busy || library.workWindowID == nil)
+                Button("完成") { library.showSwitch = false }.keyboardShortcut(.cancelAction)
+                Button("刷新状态") { Task { await library.openSwitch() } }.disabled(library.busy)
             }
-        }.padding(24).frame(width: 640, height: 620)
+        }
+        .padding(24).frame(width: 700, height: 700)
+        .sheet(item: $renameTarget) { window in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("重命名窗口").font(.title3.bold())
+                TextField("窗口名称", text: $renameDraft).textFieldStyle(.roundedBorder).frame(width: 320)
+                HStack {
+                    Spacer()
+                    Button("取消") { renameTarget = nil }.keyboardShortcut(.cancelAction)
+                    Button("保存") {
+                        let target = window.id
+                        let name = renameDraft
+                        renameTarget = nil
+                        Task { await library.renameWindow(target, to: name) }
+                    }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                }
+            }.padding(24)
+        }
+    }
+
+    private func windowRow(_ window: WorkWindow) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(window.name).font(.system(size: 13, weight: .semibold))
+                    if window.legacy == true {
+                        Text("内置").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 2).background(Color.secondary.opacity(0.14), in: Capsule())
+                    }
+                    if window.running == true {
+                        Text("运行中 · PID \(window.pid ?? 0)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
+                    }
+                }
+                Text("起始模型：\(library.models.first { $0.id == window.initialModel }?.name ?? "自动")")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(window.homePath ?? "").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button(window.running == true ? "已在运行" : "打开") { Task { await library.openWindow(window.id) } }
+                .disabled(library.busy)
+            if window.running == true {
+                Button("关闭") { Task { await library.closeWindow(window.id) } }.disabled(library.busy)
+            }
+            Menu {
+                Button("用这个窗口的起始模型再开一个") { Task { await library.newWindow(initial: window.initialModel ?? "") } }
+                Button("重命名…") { renameDraft = window.name; renameTarget = window }
+                Divider()
+                Button("删除窗口", role: .destructive) { Task { await library.deleteWindow(window.id) } }
+                    .disabled(window.legacy == true || window.running == true)
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuStyle(.borderlessButton).frame(width: 28)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var sidebar: some View {
@@ -101,7 +163,7 @@ struct ModelLibraryView: View {
                 Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Codex 模型助手").font(.headline)
-                    Text("LOCAL FIRST · 2.2").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text("MODEL ROUTER · 2.3").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                 }
             }.padding(.top, 8)
             TextField("搜索模型或供应商", text: $library.search).textFieldStyle(.roundedBorder)
@@ -149,12 +211,12 @@ struct ModelLibraryView: View {
             }
             Button { Task { await library.launchPreferredLocal() } } label: { Label("启动本地主力", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }
                 .buttonStyle(.bordered).disabled(library.busy || !library.canLaunchPreferredLocal)
-            Button { Task { await library.openSwitch() } } label: { Label("可切换窗口", systemImage: "arrow.triangle.2.circlepath").frame(maxWidth: .infinity) }
+            Button { Task { await library.newWindow(initial: library.newWindowModel) } } label: { Label("新建可切换窗口", systemImage: "macwindow.badge.plus").frame(maxWidth: .infinity) }
+                .buttonStyle(.borderedProminent).disabled(library.busy || library.switchModels.isEmpty)
+                .help("再开一个独立的 Codex 窗口：它有自己的任务库和运行状态，可以和现有窗口同时干活，窗口里随时换模型")
+            Button { Task { await library.openSwitch() } } label: { Label("窗口管理（\(library.windows.count)）", systemImage: "macwindow.on.rectangle").frame(maxWidth: .infinity) }
                 .buttonStyle(.bordered).disabled(library.busy || library.switchModels.isEmpty)
-                .help("一个窗口使用全部模型（含官方）；在 Codex 里换模型不会丢对话")
-            Button { Task { await library.openWorkWindow() } } label: { Label("打开工作窗口", systemImage: "macwindow.badge.plus").frame(maxWidth: .infinity) }
-                .buttonStyle(.borderedProminent).disabled(library.busy || library.workWindowID == nil)
-                .help("打开统一工作窗口：\(library.workWindowName)，对话和任务库都在这里")
+                .help("打开、关闭、重命名、删除窗口，也可以在这里新建窗口")
             Button { Task { await library.openExpert() } } label: { Label("本地优先 / 专家策略", systemImage: "person.crop.circle.badge.checkmark").frame(maxWidth: .infinity) }
                 .disabled(library.busy)
             Button { editing = ManagedModel.new() } label: { Label("添加模型", systemImage: "plus").frame(maxWidth: .infinity) }
@@ -233,8 +295,8 @@ struct ModelLibraryView: View {
                 Spacer()
                 Button("检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
                 Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived || model.protocol == "oauth").help("发送短测试请求，消耗少量供应商额度")
-                Button("打开工作窗口") { Task { await library.openWorkWindow(initial: model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
-                    .help("打开统一工作窗口，用这个模型作为起始模型；窗口里的全部模型都能在 Codex 顶部直接换")
+                Button("在新窗口打开") { Task { await library.newWindow(initial: model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
+                    .help("新建一个独立 Codex 窗口，用这个模型作为起始模型；窗口里的全部模型都能在 Codex 顶部直接换")
                 Menu {
                     Button("独立窗口（单模型）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
                     if model.protocol != "oauth" {

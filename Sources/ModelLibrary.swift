@@ -61,6 +61,20 @@ struct ProductResponse: Decodable {
     var answer: String?
     var switchModels: [SwitchableModel]?
     var routerRunning: Bool?
+    var windows: [WorkWindow]?
+    var window: WorkWindow?
+}
+
+// 每个窗口有自己的一份 CODEX_HOME 与浏览器数据目录，可以同时开多个，各自在 Codex 里换模型。
+struct WorkWindow: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    var initialModel: String?
+    var createdAt: String?
+    var legacy: Bool?
+    var running: Bool?
+    var pid: Int?
+    var homePath: String?
 }
 
 struct LocalRuntimeStatus: Decodable {
@@ -94,6 +108,8 @@ final class LibraryViewModel: ObservableObject {
     @Published var switchModels: [SwitchableModel] = []
     @Published var routerRunning = false
     @Published var showSwitch = false
+    @Published var windows: [WorkWindow] = []
+    @Published var newWindowModel = ""
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
@@ -109,11 +125,6 @@ final class LibraryViewModel: ObservableObject {
     var canLaunchPreferredLocal: Bool { models.contains { $0.id == preferredLocalID && $0.ready && !$0.archived } }
     var preferredLocalName: String { canLaunchPreferredLocal ? (models.first { $0.id == preferredLocalID }?.name ?? "未配置") : "已停用" }
     func isLocal(_ model: ManagedModel) -> Bool { ["s5090-ornith", "s5090-qwen"].contains(model.id) }
-    var workWindowID: String? {
-        models.first { $0.switchable == true && !$0.archived }?.id
-            ?? models.first { $0.archived == false && $0.ready && $0.protocol != "oauth" && !["s5090-ornith", "s5090-qwen"].contains($0.id) }?.id
-    }
-    var workWindowName: String { models.first { $0.id == workWindowID }?.name ?? "未设置" }
     func isRunning(_ model: ManagedModel) -> Bool { localStatus?.runningInstances.contains(model.id) == true }
     func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
 
@@ -150,6 +161,7 @@ final class LibraryViewModel: ObservableObject {
         if let status = response.localStatus { localStatus = status }
         if let values = response.switchModels { switchModels = values }
         if let value = response.routerRunning { routerRunning = value }
+        if let values = response.windows { windows = values }
         success = response.ok
     }
 
@@ -182,35 +194,59 @@ final class LibraryViewModel: ObservableObject {
         busy = true
         let response = await call(["switch-status"])
         accept(response)
+        if newWindowModel.isEmpty, let first = response.switchModels?.first { newWindowModel = first.id }
         showSwitch = response.ok
         busy = false
     }
 
-    func launchSwitchWindow(initial: String = "") async {
+    var runningWindowCount: Int { windows.filter { $0.running == true }.count }
+    var legacyWindow: WorkWindow? { windows.first { $0.id == "router" } }
+    func windowName(for modelID: String) -> String? { windows.first { $0.initialModel == modelID }?.name }
+
+    // 新建一个独立窗口：它自带一份 CODEX_HOME 与浏览器数据目录，可以和其它窗口同时运行、各自换模型。
+    func newWindow(initial: String = "") async {
         busy = true
         success = nil
-        message = "正在准备可切换窗口（第一次启动需要几秒）…"
-        let response = await call(["switch-window", initial])
-        accept(response)
-        if response.ok { showSwitch = false }
+        message = "正在新建可切换窗口（第一次启动需要几秒）…"
+        accept(await call(["new-window", initial]))
         busy = false
     }
 
-    // 统一入口：打开那个"什么模型都能换"的工作窗口（对话就在同一个任务库里）。
-    func openWorkWindow(initial: String = "") async {
+    // 打开已有窗口。窗口正在运行时只提示，不会重复启动；起始模型用窗口记住的那个。
+    func openWindow(_ id: String) async {
         busy = true
         success = nil
-        message = "正在打开工作窗口…"
-        let targetID = initial.isEmpty ? (workWindowID ?? "") : initial
-        guard !targetID.isEmpty, let target = models.first(where: { $0.id == targetID }) else {
-            message = "还没有可用作工作窗口的模型，请先配置一个并填写 Key"
-            success = false
-            busy = false
-            return
-        }
-        accept(await call(["switch-window", target.id]))
+        message = "正在打开窗口…"
+        accept(await call(["open-window", id]))
         busy = false
     }
+
+    func renameWindow(_ id: String, to name: String) async {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { message = "请输入窗口名称"; success = false; return }
+        busy = true
+        success = nil
+        accept(await call(["rename-window", id, clean]))
+        busy = false
+    }
+
+    func closeWindow(_ id: String) async {
+        busy = true
+        success = nil
+        message = "正在关闭窗口…"
+        accept(await call(["close-window", id]))
+        busy = false
+    }
+
+    func deleteWindow(_ id: String) async {
+        busy = true
+        success = nil
+        message = "正在删除窗口…"
+        accept(await call(["delete-window", id]))
+        busy = false
+    }
+
+    func openWorkWindow() async { await openWindow("router") }
 
     func toggleHidden() async {
         showHidden.toggle()

@@ -1,9 +1,10 @@
 import http from "node:http";
 import fs from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelStore } from "./model-store.mjs";
 import { LocalQueue } from "./local-queue.mjs";
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
@@ -18,9 +19,27 @@ export const gatewayURL = `http://127.0.0.1:${gatewayPort}`;
 export const streamIdleMs = 300000;
 
 // 网关进程可能由 launchd、助手应用或 CLI 启动；用源码指纹判断在跑的进程是不是当前代码。
+// 指纹只跟着真正的 import 走：改一个网关根本不加载的文件（例如 product-service.mjs）不该被误判成“必须重启”。
+function loadedModules(entry, seen = new Set()) {
+  const url = new URL(entry, import.meta.url);
+  if (seen.has(url.href)) return seen;
+  seen.add(url.href);
+  let source;
+  try { source = fs.readFileSync(url, "utf8"); } catch { return seen; }
+  for (const pattern of [/from\s*["'](\.\/[^"']+)["']/g, /import\s*\(\s*["'](\.\/[^"']+)["']\s*\)/g]) {
+    for (const match of source.matchAll(pattern)) loadedModules(match[1], seen);
+  }
+  return seen;
+}
+
+// 指纹必须与目录无关：仓库里的源码和安装后的 runtime-v2 副本是同一份代码，指纹要一致。
+const gatewayRoot = path.dirname(fileURLToPath(import.meta.url));
 export const gatewayBuild = createHash("sha256")
-  .update(["model-gateway.mjs", "router.mjs", "protocol-adapter.mjs", "product-service.mjs", "model-store.mjs"]
-    .map((name) => fs.readFileSync(new URL(name, import.meta.url)))
+  .update([...loadedModules("model-gateway.mjs")]
+    .map((href) => fileURLToPath(href))
+    .map((file) => ({ name: path.relative(gatewayRoot, file), source: fs.readFileSync(file, "utf8") }))
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+    .map((entry) => `${entry.name}\n${entry.source}`)
     .join("\n"))
   .digest("hex")
   .slice(0, 12);

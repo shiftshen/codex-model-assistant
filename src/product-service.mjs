@@ -12,6 +12,17 @@ import { localCallers, readExpertPolicy } from "./expert-policy.mjs";
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
 import {
+  findWindow,
+  isValidWindowID,
+  legacyWindowID,
+  nextWindowID,
+  nextWindowName,
+  readWindowRegistry,
+  windowPaths,
+  windowsRootName,
+  writeWindowRegistry,
+} from "./window-registry.mjs";
+import {
   importConversations,
   inspectConversationStore,
   inspectGlobalProjectState,
@@ -61,15 +72,41 @@ export function catalog(route) {
 }
 
 // 进程命令行里的 --user-data-dir 决定哪个窗口正在运行：模型窗口是 <root>/<instances-v2|continuations-v1>/<id>/browser-data，
-// 可切换窗口是 <root>/router-v1/browser-data。抽成纯函数，便于用真实 ps 输出回归。
+// 工作窗口是 <root>/windows-v1/<id>/browser-data，遗留工作窗口是 <root>/router-v1/browser-data（仍记作 router）。
+// 抽成纯函数，便于用真实 ps 输出回归。
 export function runningInstancesFromPS(output, root) {
+  return [...parseRunningWindows(output, root).keys()].sort();
+}
+
+// 同一个窗口可能有多个子进程共用同一 user-data-dir（主进程 + 渲染进程），取最先出现的那个 pid。
+export function parseRunningWindows(output, root) {
   const escapedRoot = path.resolve(root).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`--user-data-dir=${escapedRoot}/(?:(?:instances-v2|continuations-v1)/([^/]+)|router-v1)/browser-data`, "g");
-  return [...new Set([...String(output ?? "").matchAll(pattern)].map((match) => match[1] ?? "router"))].sort();
+  const pattern = new RegExp(
+    `--user-data-dir=${escapedRoot}/(?:(?:instances-v2|continuations-v1|${windowsRootName})/([^/]+)|router-v1)/browser-data`,
+  );
+  const found = new Map();
+  for (const line of String(output ?? "").split("\n")) {
+    const match = line.match(pattern);
+    if (!match) continue;
+    const id = match[1] ?? legacyWindowID;
+    if (found.has(id)) continue;
+    const pid = Number((line.match(/^\s*(\d+)\s/) || [])[1]);
+    found.set(id, Number.isInteger(pid) ? pid : 0);
+  }
+  return found;
 }
 
 export class ProductService {
   constructor(store = new ModelStore()) { this.store = store; }
+  // 窗口运行状态：id → pid（0 表示命令行里没有 pid，通常来自测试夹具）。
+  async runningWindows() {
+    try {
+      const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 });
+      return parseRunningWindows(stdout, this.store.root);
+    } catch {
+      return new Map();
+    }
+  }
   async localRuntimeStatus() {
     const policy = await readExpertPolicy(this.store);
     let runningInstances = [];
@@ -190,20 +227,31 @@ export class ProductService {
     let health = null;
     try { health = await this.gatewayHealth(); } catch { }
     if (health?.build === gatewayBuild) return { message: "模型网关已运行" };
+    let stale = null;
     if (health) {
       // 有请求正在跑就先不升级，避免打断别人的任务；下次操作再试。
-      if (Number(health.inflight) > 0) return { message: `模型网关有 ${health.inflight} 个请求正在进行，已推迟到下次操作自动升级到 ${gatewayBuild}` };
+      if (Number(health.inflight) > 0) {
+        return { message: `模型网关有 ${health.inflight} 个请求正在进行，本次沿用当前进程（${health.build}），下次操作会自动升级到 ${gatewayBuild}` };
+      }
       await this.restartGateway();
       await new Promise((resolve) => setTimeout(resolve, 500));
       try { if ((await this.gatewayHealth()).build === gatewayBuild) return { message: "模型网关已升级到当前版本" }; } catch { }
+      stale = health.build;
     }
     const child = spawn(process.execPath, [fileURLToPath(new URL("./model-gateway.mjs", import.meta.url))], { stdio: "ignore", detached: true });
     await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     child.unref();
     for (let attempt = 0; attempt < 40; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      try { if ((await this.gatewayHealth()).build === gatewayBuild) return { message: health ? "模型网关已升级到当前版本" : "模型网关已启动" }; } catch { }
+      try {
+        const current = await this.gatewayHealth();
+        if (current.build === gatewayBuild) return { message: health ? "模型网关已升级到当前版本" : "模型网关已启动" };
+        stale = current.build;
+      } catch { }
     }
+    // 升级失败（常见于端口被 launchd 托管的旧进程占着，而部署目录还没更新）：只要它还在正常服务就继续用它，
+    // 不要把用户挡在门外——真正要换代码时跑一次安装脚本或重启助手即可。
+    if (stale) return { message: `模型网关正在跑旧版本（${stale}），本次沿用它；要切到最新代码请重新运行安装脚本或重启 Codex 助手` };
     throw new Error("模型网关未能启动，请查看运行诊断");
   }
   async probe(id) {
@@ -344,19 +392,185 @@ export class ProductService {
     return { homePath: prepared.homePath, userDataPath: prepared.userDataPath, message: options.continueExisting ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。" : "已发送独立启动请求；同一模型会复用已有窗口。修改模型后请关闭该模型旧窗口再启动。" };
   }
   switchPaths() {
-    const root = path.join(this.store.root, "router-v1");
-    const homePath = path.join(root, "codex-home");
-    return { root, homePath, userDataPath: path.join(root, "browser-data"), catalogPath: path.join(homePath, "model-catalog.json") };
+    // 遗留入口：早期只有一个「可切换窗口」，现在它只是注册表里的第一个窗口（槽位 router）。
+    return windowPaths(this.store.root, legacyWindowID);
   }
   async switchSummary() {
     const data = await this.store.read();
     const table = buildRouterTable(data.routes);
-    const status = await this.localRuntimeStatus();
+    const registry = await readWindowRegistry(this.store.root);
+    const running = await this.runningWindows();
     return {
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
-      routerRunning: status.runningInstances.includes("router"),
-      routerRunningInstances: status.runningInstances,
+      windows: registry.windows.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        initialModel: entry.initialModel,
+        createdAt: entry.createdAt,
+        legacy: entry.id === legacyWindowID,
+        running: running.has(entry.id),
+        pid: running.get(entry.id) || 0,
+        homePath: windowPaths(this.store.root, entry.id).homePath,
+      })),
+      routerRunning: running.has(legacyWindowID),
+      routerRunningInstances: [...running.keys()].sort(),
     };
+  }
+  // 窗口里能选的模型 = 全部可切换模型；起始模型优先用显式指定，其次用窗口记住的那个。
+  routerSelection(table, initial, remembered) {
+    const wanted = String(initial || remembered || "").trim();
+    if (!wanted) return table[0];
+    return table.find((entry) => entry.route.id === wanted || entry.slug === wanted || entry.route.model === wanted) || table[0];
+  }
+  async windowRegistry() {
+    return readWindowRegistry(this.store.root);
+  }
+  async prepareWindow(id, initial = "", { importHistory = false, model = "" } = {}) {
+    if (!isValidWindowID(id)) throw new Error("窗口标识无效");
+    const data = await this.store.read();
+    const table = buildRouterTable(data.routes);
+    if (!table.length) throw new Error("还没有可切换的模型：请先配置至少一个第三方模型并填写密钥");
+    const registry = await readWindowRegistry(this.store.root);
+    const entry = findWindow(registry, id);
+    if (!entry && id !== legacyWindowID) throw new Error("窗口不存在，请先新建窗口");
+    const chosen = this.routerSelection(table, initial, entry?.initialModel);
+    await this.startGateway();
+    const paths = windowPaths(this.store.root, id);
+    await fs.mkdir(paths.homePath, { recursive: true, mode: 0o700 });
+    await fs.mkdir(paths.userDataPath, { recursive: true, mode: 0o700 });
+    // 启动前补项目分组：此刻没有 Codex 进程持有全局状态，不会被内存态写回覆盖。
+    let globalState = null;
+    try {
+      globalState = await mergeGlobalProjectState(await this.switchWindowSources("all"), paths.homePath);
+    } catch (error) {
+      globalState = { destination: paths.homePath, error: error.message, wrote: false };
+    }
+    await atomicJSON(paths.catalogPath, routerCatalog(table, localCallers));
+    let source = "";
+    try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    const temporary = path.join(paths.homePath, `.config-${randomUUID()}.toml`);
+    await fs.writeFile(temporary, renderRouterConfig(source, { model: chosen.slug, catalogPath: paths.catalogPath }), { mode: 0o600 });
+    await fs.rename(temporary, path.join(paths.homePath, "config.toml"));
+    for (const name of ["auth.json", "skills", "plugins", "requirements.toml", "hooks.json"]) {
+      const sourcePath = path.join(sharedHome, name);
+      try { await fs.access(sourcePath); await fs.symlink(sourcePath, path.join(paths.homePath, name)); }
+      catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
+    }
+    await fs.mkdir(path.join(paths.homePath, "memories"), { recursive: true, mode: 0o700 });
+    let imported = null;
+    if (importHistory) imported = await this.syncSwitchWindowHistory(paths.homePath, chosen.slug);
+    return { ...paths, table, chosen, globalState, imported, model };
+  }
+  async spawnWindow(prepared) {
+    await fs.access(appBinary);
+    // --user-data-dir 决定 Chromium 侧隔离；CODEX_ELECTRON_USER_DATA_PATH 让桌面端自己的状态也落在同一个窗口目录，
+    // 二者同值（Codex 官方演示启动器就是这么做的）。
+    const environment = {
+      ...process.env,
+      CODEX_HOME: prepared.homePath,
+      CODEX_ELECTRON_USER_DATA_PATH: prepared.userDataPath,
+      CMA_ROUTE_TOKEN: await this.store.token(routerID),
+    };
+    delete environment.OPENAI_API_KEY;
+    delete environment.OPENAI_BASE_URL;
+    delete environment.AGNES_API_KEY;
+    delete environment.DEEPSEEK_API_KEY;
+    const child = spawn(appBinary, [`--user-data-dir=${prepared.userDataPath}`], { env: environment, stdio: "ignore", detached: true });
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    return child.pid;
+  }
+  async createWindow(initial = "") {
+    const registry = await readWindowRegistry(this.store.root);
+    const id = nextWindowID(registry);
+    const window = { id, name: nextWindowName(registry), initialModel: "", createdAt: new Date().toISOString() };
+    await writeWindowRegistry(this.store.root, { ...registry, windows: [...registry.windows, window] });
+    try {
+      return await this.openWindow(id, initial, { reuse: false, fresh: true });
+    } catch (error) {
+      // 启动失败（网关没起来、Codex 不在等）就把刚建的空窗口撤掉，免得注册表里留下一个打不开的条目。
+      const current = await readWindowRegistry(this.store.root);
+      await writeWindowRegistry(this.store.root, { ...current, windows: current.windows.filter((entry) => entry.id !== id) });
+      await fs.rm(windowPaths(this.store.root, id).root, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
+  async openWindow(id, initial = "", { reuse = true, fresh = false } = {}) {
+    const registry = await readWindowRegistry(this.store.root);
+    const entry = findWindow(registry, id);
+    if (!entry) throw new Error("窗口不存在，请先新建窗口");
+    const running = await this.runningWindows();
+    if (reuse && running.has(id)) {
+      const summary = await this.switchSummary();
+      return {
+        ...summary,
+        window: summary.windows.find((item) => item.id === id) ?? null,
+        delivered: false,
+        message: `「${entry.name}」已经在运行（PID ${running.get(id)}），本次没有重复启动。要换起始模型请先关闭该窗口再打开。`,
+      };
+    }
+    // 首次建立任务库的窗口才补历史；新建窗口按约定留空，需要时再手动导入。
+    const importHistory = Boolean(entry.legacy) && !fresh;
+    const prepared = await this.prepareWindow(id, initial, { importHistory });
+    const pid = await this.spawnWindow(prepared);
+    const updated = (await readWindowRegistry(this.store.root)).windows.map((item) =>
+      item.id === id ? { ...item, initialModel: prepared.chosen.route.id } : item,
+    );
+    await writeWindowRegistry(this.store.root, { ...registry, windows: updated });
+    const summary = await this.switchSummary();
+    const importedMessage = prepared.imported?.pendingFirstLaunch
+      ? " 首次打开会先建立统一任务库；关闭后再次打开，会自动把官方与 API 会话补进来。"
+      : prepared.imported?.imported
+        ? ` 已自动补入 ${prepared.imported.imported} 个已有会话。`
+        : "";
+    return {
+      ...summary,
+      window: summary.windows.find((item) => item.id === id) ?? null,
+      delivered: true,
+      pid,
+      message: `已打开「${entry.name}」（PID ${pid}）：在 Codex 顶部的模型选择里直接换模型，同一个窗口里的对话继续有效。当前起始模型 ${prepared.chosen.route.name}，可选 ${prepared.table.length} 个模型。${importedMessage}`,
+    };
+  }
+  async renameWindow(id, name) {
+    const registry = await readWindowRegistry(this.store.root);
+    if (!findWindow(registry, id)) throw new Error("窗口不存在");
+    const clean = String(name ?? "").trim().slice(0, 40);
+    if (!clean) throw new Error("请输入窗口名称");
+    if (/[\u0000-\u001f]/.test(clean)) throw new Error("窗口名称包含控制字符");
+    const windows = registry.windows.map((entry) => (entry.id === id ? { ...entry, name: clean } : entry));
+    await writeWindowRegistry(this.store.root, { ...registry, windows });
+    return { ...(await this.switchSummary()), message: `窗口已重命名为「${clean}」` };
+  }
+  async closeWindow(id) {
+    const running = await this.runningWindows();
+    const pid = running.get(id);
+    if (!pid) return { ...(await this.switchSummary()), delivered: false, message: "该窗口没有在运行" };
+    try { await this.killWindowProcess(pid); }
+    catch (error) { if (error.code !== "ESRCH") throw error; }
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!(await this.runningWindows()).has(id)) break;
+    }
+    const stillRunning = (await this.runningWindows()).has(id);
+    return {
+      ...(await this.switchSummary()),
+      delivered: !stillRunning,
+      message: stillRunning ? `已发送关闭请求，但 PID ${pid} 仍在运行，请手动关闭该窗口` : "窗口已关闭；对话和任务库都留在磁盘上，随时可以再打开",
+    };
+  }
+  async killWindowProcess(pid) {
+    process.kill(pid, "SIGTERM");
+  }
+  async deleteWindow(id) {
+    if (id === legacyWindowID) throw new Error("「窗口 1」是内置窗口，不能删除；可以改名或先关闭它");
+    const registry = await readWindowRegistry(this.store.root);
+    if (!findWindow(registry, id)) throw new Error("窗口不存在");
+    if ((await this.runningWindows()).has(id)) throw new Error("窗口正在运行，请先关闭再删除");
+    const windows = registry.windows.filter((entry) => entry.id !== id);
+    await writeWindowRegistry(this.store.root, { ...registry, windows });
+    const paths = windowPaths(this.store.root, id);
+    await fs.rm(paths.root, { recursive: true, force: true });
+    return { ...(await this.switchSummary()), message: "窗口已删除，它自己的任务库和会话副本一并移除；官方库和其它窗口不受影响" };
   }
   async switchWindowSources(target = "all") {
     const sources = [];
@@ -367,7 +581,8 @@ export class ProductService {
       const data = await this.store.read();
       for (const route of data.routes ?? []) if (route.archived) archived.add(route.id);
     }
-    for (const slot of ["instances-v2", "continuations-v1"]) {
+    // windows-v1 是 2.3 起的新窗口槽位；router-v1 作为目标时不会把自己当来源（mergeGlobalProjectState 会跳过 destination）。
+    for (const slot of ["instances-v2", "continuations-v1", windowsRootName]) {
       if (target === "all") {
         let names = [];
         try { names = await fs.readdir(path.join(this.store.root, slot)); }
@@ -399,7 +614,7 @@ export class ProductService {
     if (reassignedThreads) parts.push(`为 ${reassignedThreads} 条会话补回项目归属`);
     if (global.wrote) parts.push(`补入 ${global.projectsAdded || 0} 个侧边栏分组、${global.assignmentsAdded || 0} 条会话归属（去重 ${global.projectsDeduped || 0} 个重复项目）`);
     const changed = Boolean(parts.length);
-    const running = (await this.localRuntimeStatus()).runningInstances.includes(routerID);
+    const running = (await this.runningWindows()).has(legacyWindowID);
     return {
       ...(await this.switchSummary()),
       switchHealth: report.after,
@@ -411,54 +626,12 @@ export class ProductService {
       ].filter(Boolean).join(" "),
     };
   }
+  // 遗留入口：等价于打开注册表里的第一个窗口；没有在运行时才真的启动。
   async prepareSwitchWindow(initial = "") {
-    const data = await this.store.read();
-    const table = buildRouterTable(data.routes);
-    if (!table.length) throw new Error("还没有可切换的模型：请先配置至少一个第三方模型并填写密钥");
-    const chosen = table.find((entry) => entry.route.id === initial || entry.slug === initial) || table[0];
-    await this.startGateway();
-    const paths = this.switchPaths();
-    await fs.mkdir(paths.homePath, { recursive: true, mode: 0o700 });
-    await fs.mkdir(paths.userDataPath, { recursive: true, mode: 0o700 });
-    // 启动前补项目分组：此刻没有 Codex 进程持有全局状态，不会被内存态写回覆盖。
-    let globalState = null;
-    try {
-      globalState = await mergeGlobalProjectState(await this.switchWindowSources("all"), paths.homePath);
-    } catch (error) {
-      globalState = { destination: paths.homePath, error: error.message, wrote: false };
-    }
-    await atomicJSON(paths.catalogPath, routerCatalog(table, localCallers));
-    let source = "";
-    try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
-    const temporary = path.join(paths.homePath, `.config-${randomUUID()}.toml`);
-    await fs.writeFile(temporary, renderRouterConfig(source, { model: chosen.slug, catalogPath: paths.catalogPath }), { mode: 0o600 });
-    await fs.rename(temporary, path.join(paths.homePath, "config.toml"));
-    for (const name of ["auth.json", "skills", "plugins", "requirements.toml", "hooks.json"]) {
-      const sourcePath = path.join(sharedHome, name);
-      try { await fs.access(sourcePath); await fs.symlink(sourcePath, path.join(paths.homePath, name)); }
-      catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
-    }
-    await fs.mkdir(path.join(paths.homePath, "memories"), { recursive: true, mode: 0o700 });
-    return { ...paths, table, chosen, globalState };
+    return this.prepareWindow(legacyWindowID, initial);
   }
   async launchSwitchWindow(initial = "") {
-    const prepared = await this.prepareSwitchWindow(initial);
-    const imported = await this.syncSwitchWindowHistory(prepared.homePath, prepared.chosen.slug);
-    await fs.access(appBinary);
-    const environment = { ...process.env, CODEX_HOME: prepared.homePath, CMA_ROUTE_TOKEN: await this.store.token(routerID) };
-    delete environment.OPENAI_API_KEY;
-    delete environment.OPENAI_BASE_URL;
-    delete environment.AGNES_API_KEY;
-    delete environment.DEEPSEEK_API_KEY;
-    const child = spawn(appBinary, [`--user-data-dir=${prepared.userDataPath}`], { env: environment, stdio: "ignore", detached: true });
-    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    child.unref();
-    const importedMessage = imported.pendingFirstLaunch
-      ? "首次打开会先建立统一任务库；关闭后再次打开，会自动把官方与 API 会话补进来。"
-      : imported.imported
-        ? ` 已自动补入 ${imported.imported} 个已有会话。`
-        : "";
-    return { ...(await this.switchSummary()), message: `已打开可切换窗口：在 Codex 顶部的模型选择里直接换模型，同一个窗口里的对话继续有效。当前 ${prepared.chosen.route.name}，可选 ${prepared.table.length} 个模型。${importedMessage}` };
+    return this.openWindow(legacyWindowID, initial);
   }
   async importHistory(target = "all") {
     const prepared = await this.prepareSwitchWindow("");

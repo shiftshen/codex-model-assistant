@@ -4,6 +4,7 @@ import { ProductService } from "./product-service.mjs";
 import { limitedJSON } from "./model-gateway.mjs";
 import { ExpertService } from "./expert-service.mjs";
 import { readExpertPolicy, saveExpertPolicy } from "./expert-policy.mjs";
+import { legacyWindowID } from "./window-registry.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -53,6 +54,14 @@ async function main() {
   if (command === "launch") return service.launch(id);
   if (command === "continue") return service.launch(id, { continueExisting: true });
   if (command === "switch-status") return service.switchSummary();
+  if (command === "windows") return service.switchSummary();
+  // 新窗口：每个窗口一份独立的 CODEX_HOME + 浏览器数据目录，可以同时开多个、各自换模型。
+  if (command === "new-window") return service.createWindow(id || "");
+  if (command === "open-window") return service.openWindow(id || legacyWindowID);
+  if (command === "rename-window") return service.renameWindow(id, process.argv[4] || "");
+  if (command === "close-window") return service.closeWindow(id);
+  if (command === "delete-window") return service.deleteWindow(id);
+  // 遗留入口：等价于打开「窗口 1」。
   if (command === "switch-window") return service.launchSwitchWindow(id || "");
   if (command === "import-history") return service.importHistory(id || "all");
   if (command === "repair-work-window") return service.repairSwitchWindowMetadata(id || "all");
