@@ -13,6 +13,43 @@ export const staleDays = 30;
 export const cleanupFolder = "cleanup";
 const continuationSlot = "continuations-v1";
 
+// 浏览器侧缓存目录：全都是可再生的（下次启动自己下载或重建）。
+// 刻意不碰 Cookies、Local Storage、IndexedDB、Preferences——那些装着登录状态和窗口设置，删了用户就得重新登录。
+export const browserCacheDirs = Object.freeze([
+  "component_crx_cache",
+  "GraphiteDawnCache",
+  "DawnGraphiteCache",
+  "DawnWebGPUCache",
+  "WasmTtsEngine",
+  "WidevineCdm",
+  "Crashpad",
+  "sentry",
+  "DeferredBrowserMetrics",
+  "OptimizationHints",
+  "OptimizationGuideModelsManifest",
+  "OptimizationGuidePredictionModels",
+  "segmentation_platform",
+  "ActorSafetyLists",
+  "CertificateRevocation",
+  "Default/Cache",
+  "Default/Code Cache",
+  "Default/GPUCache",
+  "Default/DawnGraphiteCache",
+  "Default/DawnWebGPUCache",
+  "Default/ShaderCache",
+  "Default/GrShaderCache",
+  "Default/Service Worker/CacheStorage",
+  "Default/Service Worker/ScriptCache",
+]);
+
+// 浏览器缓存只在这四类槽位里收；instances/ 是早期单模型窗口的遗留目录，状态不明，不碰。
+const browserSlots = Object.freeze([
+  { slot: "router-v1", fixedID: legacyWindowID },
+  { slot: "instances-v2" },
+  { slot: continuationSlot },
+  { slot: "windows-v1" },
+]);
+
 // threads.updated_at 是「秒」，和 Date.now() 的毫秒不能直接比。
 export function staleCutoffSeconds(now = Date.now()) {
   return Math.floor(now / 1000) - staleDays * 86400;
@@ -107,19 +144,70 @@ export async function cleanupTargets(root) {
   return targets;
 }
 
+// 每个窗口的浏览器缓存目录清单。id 与 parseRunningSlots 保持一致，才能正确跳过正在运行的窗口。
+export async function windowCacheTargets(root) {
+  const targets = [];
+  for (const entry of browserSlots) {
+    const dir = path.join(root, entry.slot);
+    let names = [];
+    if (entry.fixedID) {
+      try { await fs.access(dir); names = ["."]; } catch (error) { if (error.code !== "ENOENT") throw error; }
+    } else {
+      try { names = (await fs.readdir(dir)).sort(); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+    for (const name of names) {
+      const base = entry.fixedID ? dir : path.join(dir, name);
+      targets.push({ id: entry.fixedID ?? name, slot: entry.fixedID ? "router-v1" : `${entry.slot}/${name}`, userDataPath: path.join(base, "browser-data") });
+    }
+  }
+  return targets;
+}
+
+// 缓存必须是「窗口目录/browser-data 下的白名单子目录」，绝不删 browser-data 本身或白名单之外的东西。
+function cacheDirPath(userDataPath, relative) {
+  const resolved = path.resolve(userDataPath, relative);
+  const rootResolved = path.resolve(userDataPath);
+  if (!resolved.startsWith(rootResolved + path.sep)) return null;
+  return resolved;
+}
+
+export async function cachePlan({ root, runningIds = new Set(), onlyIds = null }) {
+  const items = [];
+  const skipped = [];
+  for (const target of await windowCacheTargets(root)) {
+    if (onlyIds && !onlyIds.has(target.id)) continue;
+    const running = runningIds.has(target.id);
+    let bytes = 0;
+    let count = 0;
+    for (const relative of browserCacheDirs) {
+      const dir = cacheDirPath(target.userDataPath, relative);
+      if (!dir) continue;
+      const size = await directorySize(dir);
+      if (size <= 0) continue;
+      bytes += size;
+      count += 1;
+      if (!running) items.push({ windowID: target.id, slot: target.slot, userDataPath: target.userDataPath, dir, relative, bytes: size });
+    }
+    if (running && count > 0) skipped.push({ id: target.id, reason: "窗口正在运行，等关闭后再清理", copies: 0, bytes });
+  }
+  return { items, skipped };
+}
+
 export function describePlan(plan) {
   return {
     generatedAt: plan.generatedAt,
     staleDays: plan.staleDays,
     reclaimBytes: plan.reclaimBytes,
-    items: { count: plan.items.length, bytes: plan.reclaimBytes, sample: plan.items.slice(0, 10).map(({ id, title, bytes, reason, windowID }) => ({ id, title, bytes, reason, windowID })) },
+    // 副本字节必须单独给：reclaimBytes 现在是「副本 + 缓存」的合计，直接复用会把缓存算进副本里。
+    items: { count: plan.items.length, bytes: plan.threadBytes ?? plan.reclaimBytes, sample: plan.items.slice(0, 10).map(({ id, title, bytes, reason, windowID }) => ({ id, title, bytes, reason, windowID })) },
+    caches: { count: (plan.caches ?? []).length, bytes: plan.cacheBytes ?? 0, sample: (plan.caches ?? []).slice(0, 6).map(({ windowID, relative, bytes }) => ({ windowID, path: relative, bytes })) },
     keepOriginals: plan.keepOriginals,
     windows: plan.windows,
     skipped: plan.skipped,
   };
 }
 
-export async function cleanupPlan({ root, officialHome, runningIds = new Set(), now = Date.now() }) {
+export async function cleanupPlan({ root, officialHome, runningIds = new Set(), now = Date.now(), onlyIds = null, scope = "", includeCaches = true }) {
   const official = await readThreadIndex(officialHome);
   if (!official) throw new Error(`官方任务库不可读：${officialHome}/state_5.sqlite`);
   const officialArchived = new Set([...official.values()].filter((entry) => entry.archived).map((entry) => entry.id));
@@ -127,15 +215,20 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
   const items = [];
   const windows = [];
   const skipped = [];
+  const caches = await (includeCaches ? cachePlan({ root, runningIds, onlyIds }) : { items: [], skipped: [] });
+  const cacheBytesByWindow = new Map();
+  for (const item of caches.items) cacheBytesByWindow.set(item.windowID, (cacheBytesByWindow.get(item.windowID) ?? 0) + item.bytes);
   let keepCount = 0;
   let keepBytes = 0;
   for (const target of await cleanupTargets(root)) {
+    if (onlyIds && !onlyIds.has(target.id)) continue;
     const index = await readThreadIndex(target.home);
     if (!index) {
       windows.push({ id: target.id, slot: target.slot, running: false, threads: 0, copies: 0, originals: 0, reclaimBytes: 0, reason: "没有任务库" });
       continue;
     }
     const running = runningIds.has(target.id);
+    const targetScope = scope || target.scope;
     let copies = 0;
     let originals = 0;
     let reclaimBytes = 0;
@@ -150,7 +243,7 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
       if (running) continue;
       const stale = officialArchived.has(thread.id);
       const old = thread.updatedAt > 0 && thread.updatedAt < cutoff;
-      if (target.scope === "stale" && !stale && !old) continue;
+      if (targetScope === "stale" && !stale && !old) continue;
       const bytes = await pathSize(thread.rolloutPath);
       reclaimBytes += bytes;
       items.push({
@@ -160,17 +253,26 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
         title: thread.title,
         rolloutPath: thread.rolloutPath,
         bytes,
-        reason: target.scope === "copies" ? "副本" : stale ? "副本 · 官方已归档" : `副本 · 超 ${staleDays} 天`,
+        reason: targetScope === "copies" ? "副本" : stale ? "副本 · 官方已归档" : `副本 · 超 ${staleDays} 天`,
       });
     }
-    windows.push({ id: target.id, slot: target.slot, running, threads: index.size, copies, originals, reclaimBytes });
+    windows.push({ id: target.id, slot: target.slot, running, threads: index.size, copies, originals, reclaimBytes, cacheBytes: cacheBytesByWindow.get(target.id) ?? 0 });
     if (running && copies > 0) skipped.push({ id: target.id, reason: "窗口正在运行，等关闭后再清理", copies, bytes: 0 });
   }
+  for (const entry of caches.skipped) {
+    if (!skipped.some((item) => item.id === entry.id)) skipped.push(entry);
+    else skipped.find((item) => item.id === entry.id).bytes = entry.bytes;
+  }
+  const threadBytes = items.reduce((sum, item) => sum + item.bytes, 0);
+  const cacheBytes = caches.items.reduce((sum, item) => sum + item.bytes, 0);
   return {
     generatedAt: new Date(now).toISOString(),
     staleDays,
-    reclaimBytes: items.reduce((sum, item) => sum + item.bytes, 0),
+    reclaimBytes: threadBytes + cacheBytes,
+    threadBytes,
+    cacheBytes,
     items,
+    caches: caches.items,
     windows,
     keepOriginals: { count: keepCount, bytes: keepBytes },
     skipped,
@@ -185,19 +287,32 @@ export async function writeAuditManifest(root, plan, stamp = new Date().toISOStr
     appliedAt: new Date().toISOString(),
     reclaimBytes: plan.reclaimBytes,
     items: plan.items.map(({ windowID, id, title, rolloutPath, bytes, reason }) => ({ windowID, id, title, rolloutPath, bytes, reason })),
+    caches: (plan.caches ?? []).map(({ windowID, slot, dir, relative, bytes }) => ({ windowID, slot, dir, relative, bytes })),
   });
   return file;
 }
 
-// 删除按「文件 → 行 → VACUUM」的顺序走；窗口在跑就整体拒绝，绝不半途而动。
+// 删除按「文件 → 行 → VACUUM」的顺序走。
+// 窗口在跑就不再整体拒绝：正跑着的窗口跳过、其余照清。多开是常态，整体拒绝会让「关掉一个窗口清一次」
+// 这种最基本的操作变成不可能（另一个窗口永远在跑）。
 export async function applyCleanup({ root, plan, confirm = false, runningIds = new Set() }) {
   if (!confirm) throw new Error("清理会删除会话副本，必须显式确认后才能执行");
-  const busy = [...new Set(plan.items.map((item) => item.windowID))].filter((id) => runningIds.has(id));
-  if (busy.length) throw new Error(`窗口 ${busy.join("、")} 正在运行，拒绝清理`);
-  if (!plan.items.length) return { deletedFiles: 0, deletedThreads: 0, freedBytes: 0, backupManifest: null, windows: [] };
-  const manifest = await writeAuditManifest(root, plan);
+  const items = plan.items.filter((item) => !runningIds.has(item.windowID));
+  const caches = (plan.caches ?? []).filter((item) => !runningIds.has(item.windowID));
+  const skippedRunning = [...new Set(plan.items
+    .filter((item) => runningIds.has(item.windowID))
+    .map((item) => item.windowID))]
+    .map((id) => {
+      const group = plan.items.filter((item) => item.windowID === id);
+      return { id, threads: group.length, bytes: group.reduce((sum, item) => sum + item.bytes, 0) };
+    });
+  const effective = { ...plan, items, caches };
+  if (!items.length && !caches.length) {
+    return { deletedFiles: 0, deletedThreads: 0, deletedCacheDirs: 0, freedBytes: 0, backupManifest: null, windows: [], skippedRunning };
+  }
+  const manifest = await writeAuditManifest(root, effective);
   const grouped = new Map();
-  for (const item of plan.items) {
+  for (const item of items) {
     if (!grouped.has(item.home)) grouped.set(item.home, []);
     grouped.get(item.home).push(item);
   }
@@ -238,7 +353,41 @@ export async function applyCleanup({ root, plan, confirm = false, runningIds = n
     freedBytes += Math.max(0, before - after);
     windows.push({ id: group[0].windowID, home, threads: group.length, beforeBytes: before, afterBytes: after });
   }
-  return { deletedFiles, deletedThreads: plan.items.length, freedBytes, backupManifest: manifest, windows };
+  let deletedCacheDirs = 0;
+  for (const item of caches) {
+    // 落盘前再自校验一次：路径必须正好是「browser-data + 白名单相对路径」，白名单外一律不动。
+    const expected = item.userDataPath ? cacheDirPath(item.userDataPath, item.relative) : null;
+    if (!expected || expected !== path.resolve(item.dir)) continue;
+    const before = await directorySize(item.dir);
+    try {
+      await fs.rm(item.dir, { recursive: true, force: true });
+      deletedCacheDirs += 1;
+      freedBytes += before;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return { deletedFiles, deletedThreads: items.length, deletedCacheDirs, freedBytes, backupManifest: manifest, windows, skippedRunning };
+}
+
+// 窗口启动前的一次自动清理：此刻 Codex 还没打开它的任务库，读写不会互相打架。
+// 只清「官方已归档」或「超 30 天」的副本（原件在官方库里，随时能再导入），并且只清这一个窗口。
+export async function cleanupWindowOnLaunch({ root, officialHome, windowID, home, runningIds = new Set(), now = Date.now(), policy = {} }) {
+  if (policy.autoCleanupOnLaunch === false) return { skipped: "已在设置里关闭启动前自动清理" };
+  if (runningIds.has(windowID)) return { skipped: "窗口已在运行" };
+  const onlyIds = new Set([windowID]);
+  const plan = await cleanupPlan({ root, officialHome, runningIds, now, onlyIds, scope: "stale", includeCaches: policy.pruneBrowserCache !== false });
+  if (!plan.items.length && !plan.caches.length) return { deletedThreads: 0, deletedCacheDirs: 0, freedBytes: 0, reclaimBytes: 0, home };
+  const result = await applyCleanup({ root, plan, confirm: true, runningIds });
+  return {
+    home,
+    deletedThreads: result.deletedThreads,
+    deletedFiles: result.deletedFiles,
+    deletedCacheDirs: result.deletedCacheDirs,
+    freedBytes: result.freedBytes,
+    backupManifest: result.backupManifest,
+    reasons: [...new Set(plan.items.map((item) => item.reason))],
+  };
 }
 
 export async function systemDisk(mount = "/") {

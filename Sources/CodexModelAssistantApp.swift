@@ -288,6 +288,10 @@ struct ModelLibraryView: View {
                     Text("\(count) 个会话副本可清 · \(plan.keepOriginals?.count ?? 0) 条原件保留")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+                if let plan = library.diskPlan, let caches = plan.caches, caches.count > 0 {
+                    Text("\(caches.count) 个浏览器缓存可清 · \(humanBytes(caches.bytes))，下次打开自动重建")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 if let skipped = library.diskPlan?.skipped, !skipped.isEmpty {
                     Text("\(skipped.map(\.id).joined(separator: "、")) 正在运行，关闭后再清")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -295,12 +299,24 @@ struct ModelLibraryView: View {
             } else {
                 Text("点「检查占用」算出可回收多少").font(.caption2).foregroundStyle(.secondary)
             }
+            if let policy = library.diskPolicy {
+                Toggle(isOn: Binding(
+                    get: { policy.autoCleanupOnLaunch ?? true },
+                    set: { value in Task { await library.setAutoCleanup(value) } }
+                )) {
+                    Text("启动窗口前自动清理不重要副本").font(.caption2)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(library.busy)
+                .help("只清「官方已归档」或「超 30 天」的会话副本和浏览器缓存；官方库、窗口独有对话一律不动。随时可关。")
+            }
             HStack(spacing: 6) {
                 Button { Task { await library.refreshDisk() } } label: { Label("检查占用", systemImage: "internaldrive").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).disabled(library.busy)
                 Button { library.showCleanupConfirm = true } label: { Label("清理", systemImage: "trash").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).disabled(library.busy || (library.disk?.reclaimable ?? 0) <= 0)
-                    .help("删除各窗口里重复的会话副本，释放磁盘；官方库和窗口独有对话不动")
+                    .help("删除各窗口里重复的会话副本与浏览器缓存，释放磁盘；官方库和窗口独有对话不动")
             }
         }
         .confirmationDialog("确认清理会话副本？", isPresented: $library.showCleanupConfirm, titleVisibility: .visible) {

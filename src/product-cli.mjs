@@ -7,6 +7,7 @@ import { ExpertService } from "./expert-service.mjs";
 import { readExpertPolicy, saveExpertPolicy } from "./expert-policy.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
 import { applyCleanup, cleanupPlan, describePlan, diskUsage } from "./disk-cleanup.mjs";
+import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -27,7 +28,7 @@ export function humanBytes(bytes) {
 }
 
 async function main() {
-  if (command === "library") { await store.read(); await service.migrateSecrets(); return { ...(await store.publicData()), expertPolicy: await readExpertPolicy(store), localStatus: await service.localRuntimeStatus(), ...(await service.switchSummary()) }; }
+  if (command === "library") { await store.read(); await service.migrateSecrets(); return { ...(await store.publicData()), expertPolicy: await readExpertPolicy(store), diskPolicy: await readDiskPolicy(store), localStatus: await service.localRuntimeStatus(), ...(await service.switchSummary()) }; }
   if (command === "local-status") return { localStatus: await service.localRuntimeStatus() };
   if (command === "expert-status") {
     const result = await new ExpertService(store).status();
@@ -81,6 +82,13 @@ async function main() {
   if (command === "adopt-window") return service.adoptWindows(id || "all");
   // 清掉「只有项目名字、点开没聊天」的空分组（归属指向了本窗口不存在的会话）。
   if (command === "prune-empty-projects") return service.pruneEmptyProjects({ dryRun: process.argv.includes("--dry-run") });
+  // 磁盘策略：控制「窗口启动前自动清理不重要副本」和「顺手清浏览器缓存」两个开关。
+  if (command === "disk-policy") return { diskPolicy: await readDiskPolicy(store), message: "磁盘策略已读取" };
+  if (command === "set-disk-policy") {
+    const input = await limitedJSON(process.stdin, 16000);
+    const saved = await saveDiskPolicy(store, input);
+    return { diskPolicy: saved, message: `已保存：启动前自动清理${saved.autoCleanupOnLaunch ? "开启" : "关闭"}，浏览器缓存清理${saved.pruneBrowserCache ? "开启" : "关闭"}` };
+  }
   // 磁盘治理：先看占用、再看计划，最后必须显式 --confirm 才真删。三件事拆开，避免误删。
   if (command === "disk-usage" || command === "cleanup-plan" || command === "cleanup-apply") {
     const root = store.root;
@@ -92,22 +100,32 @@ async function main() {
       return {
         disk,
         cleanupPlan: describePlan(plan),
+        diskPolicy: await readDiskPolicy(store),
         message: command === "disk-usage"
           ? `助手目录占用 ${humanBytes(disk.totalBytes)}，其中可回收 ${humanBytes(disk.reclaimable)}；系统剩余 ${disk.freeDiskPercent.toFixed(1)}%`
           : plan.items.length
-            ? `可回收 ${humanBytes(plan.reclaimBytes)}：${plan.items.length} 个会话副本（${plan.keepOriginals.count} 条原件保留、不删）`
-            : "没有可回收的会话副本",
+            ? `可回收 ${humanBytes(plan.reclaimBytes)}：${plan.items.length} 个会话副本、${plan.caches.length} 个缓存目录（${plan.keepOriginals.count} 条原件保留、不删）`
+            : plan.caches.length
+              ? `可回收 ${humanBytes(plan.reclaimBytes)}：${plan.caches.length} 个浏览器缓存目录（会话副本没有可回收的）`
+              : "没有可回收的会话副本",
       };
     }
     const result = await applyCleanup({ root, plan, confirm: process.argv.includes("--confirm"), runningIds });
     const after = await build();
+    const skippedNote = result.skippedRunning?.length
+      ? `；${result.skippedRunning.map((entry) => `${entry.id} 正在运行，${entry.threads} 个副本留到它关闭后再清`).join("；")}`
+      : "";
+    const parts = [];
+    if (result.deletedThreads) parts.push(`${result.deletedThreads} 个会话副本、${result.deletedFiles} 个文件`);
+    if (result.deletedCacheDirs) parts.push(`${result.deletedCacheDirs} 个缓存目录`);
     return {
       disk: await diskUsage({ root, plan: after }),
       cleanup: result,
       cleanupPlan: describePlan(after),
-      message: result.deletedThreads
-        ? `已删除 ${result.deletedThreads} 个会话副本、${result.deletedFiles} 个文件，释放 ${humanBytes(result.freedBytes)}；审计清单：${result.backupManifest}`
-        : "没有需要清理的内容",
+      diskPolicy: await readDiskPolicy(store),
+      message: parts.length
+        ? `已删除 ${parts.join("、")}，释放 ${humanBytes(result.freedBytes)}；审计清单：${result.backupManifest}${skippedNote}`
+        : `没有需要清理的内容${skippedNote}`,
     };
   }
   // 遗留入口：等价于打开「窗口 1」。

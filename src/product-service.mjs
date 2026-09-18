@@ -10,7 +10,8 @@ import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from ".
 import { attachExpertConfig, localExpertInstructions } from "./local-expert-config.mjs";
 import { localCallers, readExpertPolicy } from "./expert-policy.mjs";
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
-import { cleanupPlan, diskUsage } from "./disk-cleanup.mjs";
+import { cleanupPlan, cleanupWindowOnLaunch, diskUsage } from "./disk-cleanup.mjs";
+import { readDiskPolicy } from "./disk-policy.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
 import {
   allocateWindow,
@@ -494,6 +495,21 @@ export class ProductService {
     const paths = windowPaths(this.store.root, id);
     await fs.mkdir(paths.homePath, { recursive: true, mode: 0o700 });
     await fs.mkdir(paths.userDataPath, { recursive: true, mode: 0o700 });
+    // 启动前顺手清一遍：这一刻 Codex 还没打开任务库，删副本不会和运行中的进程抢锁。
+    // 只清这个窗口、只清「官方已归档 / 超 30 天」的副本，原件在官方库里，随时能再导入回来。
+    let diskCleanup = null;
+    try {
+      diskCleanup = await cleanupWindowOnLaunch({
+        root: this.store.root,
+        officialHome: sharedHome,
+        windowID: id,
+        home: paths.homePath,
+        runningIds: new Set([...(await this.runningWindows()).keys()]),
+        policy: await readDiskPolicy(this.store),
+      });
+    } catch (error) {
+      diskCleanup = { error: error.message };
+    }
     // 启动前补项目分组：此刻没有 Codex 进程持有全局状态，不会被内存态写回覆盖。
     let globalState = null;
     try {
@@ -517,7 +533,7 @@ export class ProductService {
     await fs.mkdir(path.join(paths.homePath, "memories"), { recursive: true, mode: 0o700 });
     let imported = null;
     if (importHistory) imported = await this.syncSwitchWindowHistory(paths.homePath, chosen.slug);
-    return { ...paths, table, chosen, globalState, imported, model };
+    return { ...paths, table, chosen, globalState, imported, model, diskCleanup };
   }
   async spawnWindow(prepared) {
     await fs.access(appBinary);
@@ -578,12 +594,16 @@ export class ProductService {
       : prepared.imported?.imported
         ? ` 已自动补入 ${prepared.imported.imported} 个已有会话。`
         : "";
+    const cleanupMessage = prepared.diskCleanup?.freedBytes
+      ? ` 顺手清掉了 ${prepared.diskCleanup.deletedThreads} 个不重要副本和 ${prepared.diskCleanup.deletedCacheDirs} 个缓存目录，释放 ${(prepared.diskCleanup.freedBytes / 1024 ** 3).toFixed(1)} GB。`
+      : "";
     return {
       ...summary,
       window: summary.windows.find((item) => item.id === id) ?? null,
       delivered: true,
       pid,
-      message: `已打开「${entry.name}」（PID ${pid}）：在 Codex 顶部的模型选择里直接换模型，同一个窗口里的对话继续有效。当前起始模型 ${prepared.chosen.route.name}，可选 ${prepared.table.length} 个模型。${importedMessage}`,
+      diskCleanup: prepared.diskCleanup,
+      message: `已打开「${entry.name}」（PID ${pid}）：在 Codex 顶部的模型选择里直接换模型，同一个窗口里的对话继续有效。当前起始模型 ${prepared.chosen.route.name}，可选 ${prepared.table.length} 个模型。${importedMessage}${cleanupMessage}`,
     };
   }
   async renameWindow(id, name) {

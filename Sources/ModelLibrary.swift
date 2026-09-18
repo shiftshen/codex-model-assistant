@@ -69,6 +69,7 @@ struct ProductResponse: Decodable {
     var disk: DiskUsage?
     var cleanupPlan: DiskPlan?
     var cleanup: CleanupResult?
+    var diskPolicy: DiskPolicy?
 }
 
 // 磁盘占用与可回收量。助手目录里同一批会话会在每个窗口各存一份，是这套多窗口机制最容易失控的地方。
@@ -87,6 +88,7 @@ struct DiskWindow: Decodable, Hashable {
     var copies: Int?
     var originals: Int?
     var reclaimBytes: Int64?
+    var cacheBytes: Int64?
     var reason: String?
 }
 
@@ -94,6 +96,7 @@ struct DiskPlan: Decodable {
     var reclaimBytes: Int64
     var staleDays: Int?
     var items: DiskPlanItems?
+    var caches: DiskPlanItems?
     var keepOriginals: DiskPlanKeep?
     var skipped: [DiskWindow]?
 }
@@ -111,8 +114,16 @@ struct DiskPlanKeep: Decodable {
 struct CleanupResult: Decodable {
     var deletedFiles: Int?
     var deletedThreads: Int?
+    var deletedCacheDirs: Int?
     var freedBytes: Int64?
     var backupManifest: String?
+}
+
+// 磁盘策略：窗口启动前自动清理不重要副本、顺手清浏览器缓存。两个开关都可由用户关掉。
+struct DiskPolicy: Decodable {
+    var revision: Int?
+    var autoCleanupOnLaunch: Bool?
+    var pruneBrowserCache: Bool?
 }
 
 func humanBytes(_ bytes: Int64?) -> String {
@@ -173,6 +184,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var newWindowModel = ""
     @Published var disk: DiskUsage?
     @Published var diskPlan: DiskPlan?
+    @Published var diskPolicy: DiskPolicy?
     @Published var showCleanupConfirm = false
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
@@ -258,6 +270,7 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.orphans { orphans = values }
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
+        if let value = response.diskPolicy { diskPolicy = value }
         success = response.ok
     }
 
@@ -273,9 +286,25 @@ final class LibraryViewModel: ObservableObject {
     func applyCleanup() async {
         busy = true
         success = nil
-        message = "正在清理会话副本（窗口自己的任务库会收缩，可能要一两分钟）…"
+        message = "正在清理副本和浏览器缓存（窗口自己的任务库会收缩，可能要一两分钟）…"
         // VACUUM 在大库上比较慢，给足时间。
         let response = await call(["cleanup-apply", "--confirm"], timeout: 3600)
+        accept(response)
+        busy = false
+    }
+
+    // 打开/关闭「窗口启动前自动清理」。关掉后只在手动点「清理」时才删，范围不变。
+    func setAutoCleanup(_ enabled: Bool) async {
+        busy = true
+        success = nil
+        let current = diskPolicy ?? DiskPolicy(revision: nil, autoCleanupOnLaunch: true, pruneBrowserCache: true)
+        let body: [String: Any] = [
+            "revision": current.revision ?? 1,
+            "autoCleanupOnLaunch": enabled,
+            "pruneBrowserCache": current.pruneBrowserCache ?? true,
+        ]
+        let data = try? JSONSerialization.data(withJSONObject: body)
+        let response = await call(["set-disk-policy"], input: data, timeout: 60)
         accept(response)
         busy = false
     }
@@ -283,9 +312,14 @@ final class LibraryViewModel: ObservableObject {
     var cleanupPrompt: String {
         let plan = diskPlan
         let count = plan?.items?.count ?? 0
+        let caches = plan?.caches?.count ?? 0
         let bytes = humanBytes(plan?.reclaimBytes ?? disk?.reclaimable)
         let keep = plan?.keepOriginals?.count ?? 0
-        return "将删除 \(count) 个会话副本、释放 \(bytes)；官方库和 \(keep) 条窗口独有对话不受影响。被清掉的对话仍可用「导入全部」从官方库取回。"
+        let parts = [
+            count > 0 ? "\(count) 个会话副本" : nil,
+            caches > 0 ? "\(caches) 个浏览器缓存目录" : nil,
+        ].compactMap { $0 }.joined(separator: "、")
+        return "将删除 \(parts.isEmpty ? "没有可清的内容" : parts)、释放 \(bytes)；官方库和 \(keep) 条窗口独有对话不受影响。被清掉的对话仍可用「导入全部」从官方库取回，缓存会在下次打开时自动重建。"
     }
 
     // 目录超过 20 GB 或系统剩余不足 15% 时提醒一次。

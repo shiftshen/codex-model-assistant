@@ -1,4 +1,4 @@
-# Codex 模型助手 2.3.2
+# Codex 模型助手 2.3.3
 
 原生 macOS 模型管理与 Codex 多开工具。安装应用位于 `/Applications/Codex 模型助手.app`。
 
@@ -29,6 +29,9 @@
 - 卡住的操作不会把界面锁死：助手每次调用都有时间上限（默认 180 秒），超时就中止并把按钮放回可用状态，不会一直转圈、按钮全灰。注册表陈旧锁的接管时限（5 秒）也明显短于等待上限（15 秒）——否则持有者异常退出后，锁还没到接管时间就先撞上等待上限，建窗会白报「正被另一个操作占用」。
 - 关窗后顺带收掉该窗口遗留的 crashpad 助手进程：它们会被 reparent 到 init，不受进程组信号影响，标记精确到该窗口自己的 `browser-data/Crashpad`，多开反复开关也不会攒下一堆后台进程，也不会误杀别的窗口。
 - 窗口列表每个运行中的窗口都有「置前」：被最小化、被压住或丢在其它桌面上的 Codex 一键切到最前，并按屏幕上真实可见的窗口数如实反馈（看不到就直说被最小化，不糊弄）。
+- 磁盘治理覆盖到缓存：可回收量现在同时统计**会话副本**和**各窗口的浏览器缓存**（`component_crx_cache`、`Default/Cache` 等 24 个白名单目录），只删缓存、不碰 `Cookies` / `Local Storage` / `IndexedDB`，登录态和设置都不会丢，缓存下次打开窗口自动重建。
+- 多开不再互相挡清理：以前只要有一个窗口在跑，整个清理就被拒绝；现在只跳过**正在跑的那一个**，其它已关闭窗口照清，并在结果里点名「谁被跳过、留多少」。多开是这个产品的常态，整体拒绝等于永远清不了。
+- 启动窗口前自动清理（默认开、可一键关）：打开窗口时，Codex 还没读任务库之前，把这个窗口里「官方已归档」或「超 30 天」的副本连同缓存清掉。判定规则和手动清理完全一致，原件在官方库里随时能再导入，`~/.codex` 与窗口独有对话一律不动。手动模式仍保留：关掉开关就只在点「清理」时删。
 
 ## 开发与安装
 
@@ -50,9 +53,11 @@ zsh scripts/package-release.sh
 - `src/product-service.mjs`：发现、验证、实例准备、启动、诊断。
 - `src/session-transfer.mjs`：会话/项目元数据迁移——任务库合并、导入，以及 `.codex-global-state.json` 的侧边栏项目分组合并（只增不改、按目录去重、原子写入并备份）。
 - `src/window-registry.mjs`：窗口注册表（`windows.json`）——窗口标识校验、槽位路径映射、新建编号与名称分配、原子写入 0600。
+- `src/disk-cleanup.mjs`：磁盘治理——副本判定（以官方库为权威）、浏览器缓存白名单、清理计划与执行、审计清单、启动前单窗口自动清理。
+- `src/disk-policy.mjs`：磁盘策略（启动前自动清理 / 清缓存两个开关），带类型校验与版本递增。
 - `src/model-gateway.mjs`、`src/protocol-adapter.mjs`：鉴权网关和协议转换。
 - `src/provider-templates.mjs`：可维护的供应商目录。
-- `tests/product.test.mjs`、`tests/router.test.mjs`、`tests/session-transfer.test.mjs`、`tests/window-registry.test.mjs`、`tests/gateway-build.test.mjs`：产品回归、可切换窗口、项目分组迁移、多窗口与网关指纹测试。
+- `tests/product.test.mjs`、`tests/router.test.mjs`、`tests/session-transfer.test.mjs`、`tests/window-registry.test.mjs`、`tests/gateway-build.test.mjs`、`tests/disk-usage.test.mjs`：产品回归、可切换窗口、项目分组迁移、多窗口、网关指纹，以及磁盘治理（副本判定、缓存白名单、运行中窗口跳过、启动前自动清理、策略读写与幂等）。
 - `scripts/smoke-live.mjs`：真实 Codex shell 工具往返验收，会消耗对应供应商额度。
 - `scripts/smoke-switch-live.mjs`：可切换窗口验收：模型 A 跑 shell 工具往返，再用模型 B 接着同一会话回答。
 - `src/expert-*.mjs`、`Sources/ExpertSettingsView.swift`：本地专家服务、预算账本与策略面板。

@@ -9,11 +9,13 @@ import {
   applyCleanup,
   cleanupFolder,
   cleanupPlan,
+  cleanupWindowOnLaunch,
   describePlan,
   diskUsage,
   staleDays,
   systemDisk,
 } from "../src/disk-cleanup.mjs";
+import { defaultDiskPolicy, readDiskPolicy, saveDiskPolicy } from "../src/disk-policy.mjs";
 
 const execFileAsync = promisify(execFile);
 const sqliteBinary = "/usr/bin/sqlite3";
@@ -134,10 +136,31 @@ test("磁盘治理：窗口在运行时跳过它的副本，并拒绝执行清�
   assert.equal(plan.windows.find((entry) => entry.id === "router").running, true);
   assert.match(plan.skipped[0].reason, /窗口正在运行/);
 
-  // 手动构造一个指向运行窗口的计划：执行阶段也必须整体拒绝，且不碰文件。
+  // 手动构造一个指向运行窗口的计划：执行阶段必须跳过它、不碰它的文件，并在结果里点名。
   const forced = { items: [{ windowID: "router", home: router, id: "shared-1", rolloutPath: rollout, bytes: 4096, reason: "副本" }] };
-  await assert.rejects(() => applyCleanup({ root, plan: forced, confirm: true, runningIds }), /正在运行，拒绝清理/);
+  const result = await applyCleanup({ root, plan: forced, confirm: true, runningIds });
+  assert.equal(result.deletedThreads, 0);
+  assert.deepEqual(result.skippedRunning, [{ id: "router", threads: 1, bytes: 4096 }]);
   await fs.access(rollout);
+});
+
+test("磁盘治理：一个窗口在跑，其它窗口照样清干净（多开是常态，不能整体卡死）", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  await addThread({ home: officialHome, id: "shared-1", bytes: 10 });
+  const router = routerHome(root);
+  const routerRollout = await addThread({ home: router, id: "shared-1", bytes: 4096 });
+  const continuation = continuationHome(root, "deepseek-flash");
+  const continuationRollout = await addThread({ home: continuation, id: "shared-1", bytes: 8192 });
+
+  const runningIds = new Set(["router"]);
+  const plan = await cleanupPlan({ root, officialHome, runningIds });
+  assert.deepEqual(plan.items.map((item) => item.windowID), ["deepseek-flash"]);
+
+  const result = await applyCleanup({ root, plan, confirm: true, runningIds });
+  assert.equal(result.deletedThreads, 1);
+  assert.equal(result.skippedRunning.length, 0, "计划本身已经把运行中的窗口排除了");
+  await fs.access(routerRollout);
+  await assert.rejects(() => fs.access(continuationRollout), /ENOENT/, "另一个窗口的副本要清掉");
 });
 
 test("磁盘治理：不确认就不落盘，确认后删文件与三类行并回收空间，再跑一次为空", async (context) => {
@@ -217,4 +240,116 @@ test("磁盘治理：占用统计把每窗口的数字汇总出来", async (cont
   assert.equal(usage.reclaimable, plan.reclaimBytes);
   assert.equal(usage.perWindow.length, plan.windows.length);
   assert.ok(usage.freeDiskPercent > 0 && usage.freeDiskPercent <= 100);
+});
+
+// 造一个窗口的浏览器数据目录：白名单里的缓存 + 必须保住的东西（登录态、白名单外的目录）。
+async function addBrowserData(root, windowID, { cacheBytes = 4096 } = {}) {
+  const base = path.join(root, "windows-v1", windowID, "browser-data");
+  const files = {
+    "component_crx_cache/component.crx": cacheBytes,
+    "GraphiteDawnCache/dawn.bin": cacheBytes,
+    "Default/Cache/data_0": cacheBytes,
+    "Default/Code Cache/js": cacheBytes,
+    "Default/Local Storage/leveldb/CURRENT": 512,
+    "Default/Network/Cookies": 512,
+    "KeepMe/important.bin": 2048,
+  };
+  for (const [relative, bytes] of Object.entries(files)) {
+    const file = path.join(base, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "x".repeat(bytes));
+  }
+  return base;
+}
+
+test("磁盘治理：只清浏览器缓存白名单，登录态和白名单外的目录一律不动", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  const base = await addBrowserData(root, "w2");
+
+  const plan = await cleanupPlan({ root, officialHome });
+  const relatives = plan.caches.map((item) => item.relative).sort();
+  assert.deepEqual(relatives, ["Default/Cache", "Default/Code Cache", "GraphiteDawnCache", "component_crx_cache"]);
+  assert.equal(plan.cacheBytes, 4 * 4096);
+  assert.equal(plan.reclaimBytes, plan.threadBytes + plan.cacheBytes);
+  const summary = describePlan(plan);
+  assert.equal(summary.caches.count, 4);
+  assert.equal(summary.caches.bytes, 4 * 4096);
+
+  const result = await applyCleanup({ root, plan, confirm: true });
+  assert.equal(result.deletedCacheDirs, 4);
+  await assert.rejects(() => fs.access(path.join(base, "component_crx_cache")), /ENOENT/);
+  await assert.rejects(() => fs.access(path.join(base, "Default/Cache")), /ENOENT/);
+  await fs.access(path.join(base, "Default/Local Storage/leveldb/CURRENT"));
+  await fs.access(path.join(base, "Default/Network/Cookies"));
+  await fs.access(path.join(base, "KeepMe/important.bin"));
+  await fs.access(path.join(base, "Default"));
+
+  const again = await cleanupPlan({ root, officialHome });
+  assert.equal(again.caches.length, 0, "第二次没有缓存可清（幂等）");
+});
+
+test("磁盘治理：窗口在跑时它的浏览器缓存也不动，关闭后才清", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  const base = await addBrowserData(root, "w2");
+  const plan = await cleanupPlan({ root, officialHome, runningIds: new Set(["w2"]) });
+  assert.deepEqual(plan.caches, []);
+  assert.equal(plan.cacheBytes, 0);
+  assert.match(plan.skipped.find((entry) => entry.id === "w2").reason, /正在运行/);
+  await fs.access(path.join(base, "component_crx_cache/component.crx"));
+});
+
+test("磁盘治理：启动前自动清理只清这一个窗口的不重要副本，官方原件和重要会话都在", async (context) => {
+  const { root, officialHome } = await fixture(context);
+  const now = Date.now();
+  const fresh = Math.floor(now / 1000);
+  const ancient = Math.floor(now / 1000) - (staleDays + 5) * 86400;
+  const officialFresh = await addThread({ home: officialHome, id: "fresh-live", bytes: 10, updatedAt: fresh });
+  const officialArchived = await addThread({ home: officialHome, id: "archived-one", bytes: 10, updatedAt: fresh, archived: 1 });
+  const officialOld = await addThread({ home: officialHome, id: "old-live", bytes: 10, updatedAt: ancient });
+
+  const router = routerHome(root);
+  const routerFresh = await addThread({ home: router, id: "fresh-live", bytes: 1024, updatedAt: fresh });
+  const routerArchived = await addThread({ home: router, id: "archived-one", bytes: 2048, updatedAt: fresh });
+  const routerOld = await addThread({ home: router, id: "old-live", bytes: 4096, updatedAt: ancient });
+  const routerOwn = await addThread({ home: router, id: "router-own", bytes: 8192, updatedAt: fresh, title: "工作窗口自己的对话" });
+  const base = await addBrowserData(root, "w2");
+
+  const result = await cleanupWindowOnLaunch({ root, officialHome, windowID: "router", home: router, now });
+  assert.equal(result.deletedThreads, 2, "已归档 + 超 30 天各一条");
+  assert.deepEqual(result.reasons.sort(), ["副本 · 官方已归档", `副本 · 超 ${staleDays} 天`]);
+  await assert.rejects(() => fs.access(routerArchived), /ENOENT/);
+  await assert.rejects(() => fs.access(routerOld), /ENOENT/);
+  await fs.access(routerFresh);
+  await fs.access(routerOwn);
+  // 官方库是权威、只读：三条原件必须原样都在。
+  await fs.access(officialFresh);
+  await fs.access(officialArchived);
+  await fs.access(officialOld);
+  // 只清被点名的窗口：别的窗口缓存不受影响。
+  await fs.access(path.join(base, "component_crx_cache/component.crx"));
+
+  const again = await cleanupWindowOnLaunch({ root, officialHome, windowID: "router", home: router, now });
+  assert.equal(again.deletedThreads, 0, "第二次没有可清的（幂等）");
+  assert.equal(again.freedBytes, 0);
+
+  const off = await cleanupWindowOnLaunch({ root, officialHome, windowID: "router", home: router, now, policy: { autoCleanupOnLaunch: false } });
+  assert.match(off.skipped, /关闭/);
+});
+
+test("磁盘策略：读出来有默认值，保存时校验类型并递增版本", async (context) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "cma-policy-"));
+  context.after(() => fs.rm(base, { recursive: true, force: true }));
+  const store = { root: path.join(base, "model-assistant") };
+
+  const initial = await readDiskPolicy(store);
+  assert.deepEqual(initial, { ...defaultDiskPolicy });
+  assert.equal(initial.autoCleanupOnLaunch, true);
+
+  const saved = await saveDiskPolicy(store, { ...initial, autoCleanupOnLaunch: false });
+  assert.equal(saved.autoCleanupOnLaunch, false);
+  assert.equal(saved.revision, initial.revision + 1);
+  assert.equal((await readDiskPolicy(store)).autoCleanupOnLaunch, false);
+
+  await assert.rejects(() => saveDiskPolicy(store, { ...saved, pruneBrowserCache: "yes" }), /true 或 false/);
+  await assert.rejects(() => saveDiskPolicy(store, { revision: 1, autoCleanupOnLaunch: true }), /true 或 false/);
 });
