@@ -87,11 +87,21 @@ test("归属：deepseek-flash 走的是 DeepSeek 官方余额", () => {
   assert.match(billing.label, /DeepSeek 官方余额/);
 });
 
-test("归属：重名模型带 -2 后缀也要能对上上游", () => {
+test("归属：重名模型的 -2 slug 必须精确对应第二个 route，不能算到第一个供应商", () => {
   const index = routesByModel(routes);
-  const billing = billingFor({ model: "deepseek-v4.1-flash-2", providerID: "cma_router" }, index);
-  assert.equal(billing.kind, "quota");
-  assert.match(billing.label, /opencode/);
+  const first = billingFor({ model: "deepseek-v4.1-flash", providerID: "cma_router" }, index);
+  const second = billingFor({ model: "deepseek-v4.1-flash-2", providerID: "cma_router" }, index);
+  assert.equal(first.kind, "quota");
+  assert.match(first.label, /opencode/);
+  assert.equal(second.kind, "third");
+  assert.match(second.label, /zzshu/);
+});
+
+test("归属：单模型窗口按 cma_<route-id> provider 精确反查，不受重名 model 影响", () => {
+  const index = routesByModel(routes);
+  const billing = billingFor({ model: "deepseek-v4.1-flash", providerID: "cma_d2" }, index);
+  assert.equal(billing.kind, "third");
+  assert.match(billing.label, /zzshu/);
 });
 
 test("归属：模型不在库里要如实说未知，不能编一个上游", () => {

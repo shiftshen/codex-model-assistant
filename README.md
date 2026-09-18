@@ -6,8 +6,8 @@
 
 | | |
 |---|---|
-| 版本 | **2.7.0** |
-| 安装包 | `release/Codex-Model-Assistant-2.7.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **2.8.0** |
+| 安装包 | `release/Codex-Model-Assistant-2.8.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；**未做 Apple 公证**，首次打开需右键 → 打开 |
@@ -40,6 +40,7 @@ zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时
 - 侧边栏项目分组随会话一起迁移：桌面端左侧「项目」读的是 `CODEX_HOME/.codex-global-state.json` 而不是 SQLite，导入与修复都会一并补入该文件；同一目录的重复项目按目录去重并改写归属，不会出现两个同名项目。
 - 接口自适：自动识别 Responses / Chat / Anthropic 三套接口（真跑一次最小请求判定）、网关遇 404/405 自动换协议并记住、转达供应商错误原因、地址粘贴自动规范化。
 - 流式与容灾：Chat / Anthropic 供应商按增量流式输出（首字即时）；可配置「主模型失败改用备用模型」，额度用尽或服务异常时同一次请求内自动切换。
+- **2.8 对话账本**：首页直接列出最近活跃的 Codex 对话、当前模型和真实扣费来源。可切换窗口按唯一 router slug 精确反查 route，单模型窗口按 provider ID 精确反查；同名模型的 `-2/-3` 不再被错误合并，宁可显示未知也不猜错账。
 - 网关指纹只覆盖它真正 import 的模块，且与目录无关（仓库源码与安装副本算出同一个指纹）：改一个网关不加载的文件（如 `src/product-service.mjs`）不再被误判成「必须重启网关」；真的升级不上时沿用仍在服务的旧进程并如实告知，不会把用户挡在门外。
 - 新建窗口失败会自动撤销刚写入的注册表条目，重试仍用同一个编号。
 - 关窗只关自己：先核对 PID 的命令行确实带该窗口自己的 `--user-data-dir`，再连同该窗口的整个进程组一起结束。多开时不会误伤别的窗口或助手自己，也不会留下占着 `browser-data` 的渲染残留子进程。

@@ -1,8 +1,8 @@
-# Codex 模型助手 2.2 使用手册
+# Codex 模型助手 2.8 使用手册
 
 ## 安装与首次启动
 
-将「Codex 模型助手.app」放入 Applications，打开即可。Apple Silicon 构建内置已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 14，本次实际验收在当前 Mac 上完成。
+将「Codex 模型助手.app」放入 Applications，打开即可。2.8.0 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
 
 助手首次启动会初始化模型库并启动本机网关。已存在的本机 DeepSeek / Agnes 私有 Key 会迁移一次，不打印明文；全新机器需要用户自行填写 Key。API 供应商与 ChatGPT 订阅分别计费。模型助手本身不代理充值或计费。
 
@@ -44,6 +44,18 @@
 - 已经用惯的条目窗口（例如「DeepSeek V4.1 Flash · 官方」）也能改成可切换：选中该模型 →「本窗口也可切换模型」。它只改这个窗口的模型目录和 provider，`CODEX_HOME` 不变，所以**这个窗口里的对话和任务库原地保留**；关闭该窗口后从助手再点「启动 Codex」即生效。想变回单模型窗口，点「本窗口改为单模型」。
 
 命令行等价入口：`windows`、`new-window [模型]`、`open-window <id>`、`rename-window <id> <名称>`、`close-window <id>`、`delete-window <id>`。
+
+## 对话账本：确认模型和费用到底走到哪里
+
+2.8.0 首页新增「正在跑的对话」。这里不拿窗口标题猜模型，而是读取 Codex 会话自己的 `thread_settings_applied`：
+
+- 可切换窗口（`cma_router`）按模型目录中的唯一 slug 精确对应模型库 route；同名模型生成的 `-2/-3` 分别属于不同 route，不会合并。
+- 单模型窗口按 `cma_<route-id>` provider 精确反查。
+- 官方 `openai/chatgpt` provider 显示为 ChatGPT 订阅额度；DeepSeek 官方接口、opencode 包月和其它第三方端点分别标识。
+- 找不到唯一对应关系时显示「未知上游」，不会为了好看而猜一个供应商。
+- 首页同时保留 fallback 警告；如果首选失败后自动改用另一个计费账户，会明确显示。
+
+命令行可用 `live-threads [分钟]` 查看同一份数据；默认只列最近 30 分钟有写入的对话。
 
 ## 磁盘与数据
 

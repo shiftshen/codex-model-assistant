@@ -20,4 +20,16 @@ jobs:
         run: |
           node --version
           /usr/bin/sqlite3 --version
-      - run: npm test
+      - name: Node 回归测试
+        run: npm test
+      - name: 获取 Universal Node 运行时
+        run: zsh scripts/fetch-runtime.sh
+      - name: 构建 Universal macOS App
+        run: zsh scripts/build-app.sh
+      - name: 校验双架构、最低系统与签名
+        run: |
+          APP="build/Codex 模型助手.app"
+          lipo -archs "$APP/Contents/MacOS/CodexModelAssistant" | grep -q arm64
+          lipo -archs "$APP/Contents/MacOS/CodexModelAssistant" | grep -q x86_64
+          /usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$APP/Contents/Info.plist" | grep -qx '12.0'
+          codesign --verify --deep --strict "$APP"

@@ -10,6 +10,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { buildRouterTable } from "./router.mjs";
 
 const SESSION_HEAD_BYTES = 384 * 1024;
 // 尾部窗口分两级：大多数对话最后一条 thread_settings 就在末尾几百 KB 内，
@@ -17,9 +18,9 @@ const SESSION_HEAD_BYTES = 384 * 1024;
 const TAIL_WINDOWS = [2 * 1024 * 1024, 6 * 1024 * 1024];
 const MAX_TITLE = 56;
 
-// Codex 遇到重名模型会自动加 -2 / -3 后缀（我们库里有三个路由的模型名都叫
-// deepseek-v4.1-flash）。拿它去比对上游之前要先还原，否则一个路由都匹配不上，
-// 账目会全部变成"未知"。
+// 仅用于展示/兼容旧数据的基础模型名。注意：账单归属绝不能靠它判断——
+// 在可切换窗口里 `model-2` / `model-3` 是 buildRouterTable() 生成的稳定 slug，
+// 分别对应不同 route；把后缀砍掉会把第二个供应商的账算到第一个供应商头上。
 export function stripModelDedupe(model) {
   return String(model ?? "").trim().replace(/-\d+$/, "");
 }
@@ -125,23 +126,31 @@ function hostLabel(endpoint) {
   }
 }
 
-// 钱的出处。model_provider_id 以 cma_ 开头 = 走助手网关，再按端点判断是谁；
-// 否则是 Codex 直连（官方订阅就是 openai / chatgpt）。
-export function billingFor(settings, routesByModel) {
-  const model = stripModelDedupe(settings?.model);
-  const provider = String(settings?.providerID ?? "");
+function billingForRoute(route) {
+  const host = hostLabel(route?.endpoint);
+  if (host.endsWith("api.deepseek.com")) return { kind: "balance", label: "DeepSeek 官方余额", detail: "按量计费" };
+  if (host.endsWith("opencode.ai")) return { kind: "quota", label: "opencode 额度", detail: "包月额度" };
+  if (host.endsWith("chatgpt.com")) return { kind: "subscription", label: "ChatGPT 订阅额度", detail: "官方直连" };
+  return { kind: "third", label: host, detail: route?.name ?? "第三方上游" };
+}
+
+// 钱的出处必须精确到 route：
+// - cma_router：thread_settings.model 是 buildRouterTable() 生成的唯一 slug，精确反查；
+// - cma_<route-id>：单模型窗口直接从 provider ID 反查；
+// - 其它 provider：不经过助手，按直连处理。
+// 绝不再把 `foo-2` 去成 `foo` 后再猜供应商。
+export function billingFor(settings, routeIndex) {
+  const model = String(settings?.model ?? "").trim();
+  const provider = String(settings?.providerID ?? "").trim();
   if (!model) return { kind: "unknown", label: "未知模型", detail: "" };
   if (provider && !provider.startsWith("cma_")) {
     if (/^(openai|chatgpt)/i.test(provider)) return { kind: "subscription", label: "ChatGPT 订阅额度", detail: "官方直连" };
     return { kind: "direct", label: `${provider} 直连`, detail: "不经过助手" };
   }
-  const routes = routesByModel.get(model) ?? [];
-  if (!routes.length) return { kind: "unknown", label: "未知上游", detail: `模型 ${model} 不在模型库里` };
-  const hosts = [...new Set(routes.map((route) => hostLabel(route.endpoint)))];
-  if (hosts.some((host) => host.endsWith("api.deepseek.com"))) return { kind: "balance", label: "DeepSeek 官方余额", detail: "按量计费" };
-  if (hosts.some((host) => host.endsWith("opencode.ai"))) return { kind: "quota", label: "opencode 额度", detail: "包月额度" };
-  if (hosts.some((host) => host.endsWith("chatgpt.com"))) return { kind: "subscription", label: "ChatGPT 订阅额度", detail: "官方直连" };
-  return { kind: "third", label: hosts.join("、"), detail: routes.map((route) => route.name).join("、") };
+  const key = provider === "cma_router" ? `slug:${model}` : (provider.startsWith("cma_") ? `provider:${provider}` : `model:${model}`);
+  const route = routeIndex.get(key) ?? null;
+  if (!route) return { kind: "unknown", label: "未知上游", detail: `模型 ${model} / provider ${provider || "?"} 无法唯一对应模型库条目` };
+  return billingForRoute(route);
 }
 
 async function collectSessions(directory, depth, found) {
@@ -233,11 +242,21 @@ export async function listLiveThreads(root, { withinMinutes = 30, now = Date.now
 
 export function routesByModel(routes) {
   const index = new Map();
+  // 可切换窗口的 model 字段就是这个 slug；buildRouterTable 的排序/去重规则是唯一权威。
+  for (const { slug, route } of buildRouterTable(routes)) index.set(`slug:${slug}`, route);
+  // 单模型窗口 provider 写成 cma_<route-id>，因此也能无歧义反查。
   for (const route of routes) {
-    const key = stripModelDedupe(route.model);
-    if (!key) continue;
-    index.set(key, [...(index.get(key) ?? []), route]);
+    const provider = `cma_${String(route.id ?? "").replaceAll("-", "_")}`;
+    index.set(`provider:${provider}`, route);
   }
+  // 只有模型名在库里唯一时才提供无 provider 的兼容回退；重名时宁可报未知也不能算错账。
+  const groups = new Map();
+  for (const route of routes) {
+    const model = String(route.model ?? "").trim();
+    if (!model) continue;
+    groups.set(model, [...(groups.get(model) ?? []), route]);
+  }
+  for (const [model, matches] of groups) if (matches.length === 1) index.set(`model:${model}`, matches[0]);
   return index;
 }
 
