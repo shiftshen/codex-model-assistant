@@ -232,6 +232,10 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
     let copies = 0;
     let originals = 0;
     let reclaimBytes = 0;
+    // 运行中的窗口不能动，但它「关掉后能回收多少」必须算出来：
+    // 只说「正在运行」而不给数字，用户没法判断值不值得关掉它再清一次。
+    let pendingCount = 0;
+    let pendingBytes = 0;
     for (const thread of index.values()) {
       if (!official.has(thread.id)) {
         originals += 1;
@@ -240,11 +244,15 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
         continue;
       }
       copies += 1;
-      if (running) continue;
       const stale = officialArchived.has(thread.id);
       const old = thread.updatedAt > 0 && thread.updatedAt < cutoff;
       if (targetScope === "stale" && !stale && !old) continue;
       const bytes = await pathSize(thread.rolloutPath);
+      if (running) {
+        pendingCount += 1;
+        pendingBytes += bytes;
+        continue;
+      }
       reclaimBytes += bytes;
       items.push({
         windowID: target.id,
@@ -256,12 +264,21 @@ export async function cleanupPlan({ root, officialHome, runningIds = new Set(), 
         reason: targetScope === "copies" ? "副本" : stale ? "副本 · 官方已归档" : `副本 · 超 ${staleDays} 天`,
       });
     }
-    windows.push({ id: target.id, slot: target.slot, running, threads: index.size, copies, originals, reclaimBytes, cacheBytes: cacheBytesByWindow.get(target.id) ?? 0 });
-    if (running && copies > 0) skipped.push({ id: target.id, reason: "窗口正在运行，等关闭后再清理", copies, bytes: 0 });
+    const cacheBytes = cacheBytesByWindow.get(target.id) ?? 0;
+    windows.push({ id: target.id, slot: target.slot, running, threads: index.size, copies, originals, reclaimBytes, cacheBytes, pendingCount, pendingBytes });
+    if (running && (pendingCount > 0 || cacheBytes > 0)) {
+      skipped.push({ id: target.id, reason: "窗口正在运行，等关闭后再自动清理", copies: pendingCount, bytes: pendingBytes + cacheBytes, copyBytes: pendingBytes, cacheBytes });
+    }
   }
+  // 同一个窗口的副本与缓存各算过一次，合并成一条「关掉后能回收」的记录，别把缓存的数字覆盖掉副本的。
   for (const entry of caches.skipped) {
-    if (!skipped.some((item) => item.id === entry.id)) skipped.push(entry);
-    else skipped.find((item) => item.id === entry.id).bytes = entry.bytes;
+    const existing = skipped.find((item) => item.id === entry.id);
+    if (!existing) {
+      skipped.push({ ...entry, copyBytes: 0, cacheBytes: entry.bytes });
+      continue;
+    }
+    existing.cacheBytes = entry.bytes;
+    existing.bytes = (existing.copyBytes ?? 0) + entry.bytes;
   }
   const threadBytes = items.reduce((sum, item) => sum + item.bytes, 0);
   const cacheBytes = caches.items.reduce((sum, item) => sum + item.bytes, 0);

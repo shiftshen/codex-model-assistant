@@ -89,6 +89,10 @@ struct DiskWindow: Decodable, Hashable {
     var originals: Int?
     var reclaimBytes: Int64?
     var cacheBytes: Int64?
+    var pendingBytes: Int64?
+    var pendingCount: Int?
+    var copyBytes: Int64?
+    var bytes: Int64?
     var reason: String?
 }
 

@@ -293,8 +293,10 @@ struct ModelLibraryView: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 if let skipped = library.diskPlan?.skipped, !skipped.isEmpty {
-                    Text("\(skipped.map(\.id).joined(separator: "、")) 正在运行，关闭后再清")
+                    // 一般只有一个窗口在跑，合成一段文本比 ForEach 更省事，也避免结果构建器里的重载歧义。
+                    Text(skipped.map { "\($0.id) 正在运行：还有 \(humanBytes($0.bytes)) 等它关闭后自动清理" }.joined(separator: "\n"))
                         .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 Text("点「检查占用」算出可回收多少").font(.caption2).foregroundStyle(.secondary)

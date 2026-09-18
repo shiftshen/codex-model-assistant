@@ -123,21 +123,36 @@ test("磁盘治理：续接窗口清全部副本，工作窗口只清官方已�
   assert.equal(plan.keepOriginals.count, 1, "工作窗口独有的对话要保留");
 });
 
-test("磁盘治理：窗口在运行时跳过它的副本，并拒绝执行清理", async (context) => {
+test("磁盘治理：窗口在运行时跳过它的副本，并算出「关掉后能回收多少」", async (context) => {
   const { root, officialHome } = await fixture(context);
-  await addThread({ home: officialHome, id: "shared-1", bytes: 10 });
+  const now = Date.now();
+  const fresh = Math.floor(now / 1000);
+  const ancient = Math.floor(now / 1000) - (staleDays + 5) * 86400;
+  await addThread({ home: officialHome, id: "fresh-live", bytes: 10, updatedAt: fresh });
+  await addThread({ home: officialHome, id: "archived-one", bytes: 10, updatedAt: fresh, archived: 1 });
+  await addThread({ home: officialHome, id: "old-live", bytes: 10, updatedAt: ancient });
   const router = routerHome(root);
-  const rollout = await addThread({ home: router, id: "shared-1", bytes: 4096 });
+  const rollout = await addThread({ home: router, id: "archived-one", bytes: 4096 });
+  await addThread({ home: router, id: "old-live", bytes: 8192, updatedAt: ancient });
+  await addThread({ home: router, id: "fresh-live", bytes: 1024, updatedAt: fresh });
 
   const runningIds = new Set(["router"]);
-  const plan = await cleanupPlan({ root, officialHome, runningIds });
+  const plan = await cleanupPlan({ root, officialHome, runningIds, now });
   assert.deepEqual(plan.items, [], "运行中的窗口不选任何副本");
   assert.equal(plan.reclaimBytes, 0);
-  assert.equal(plan.windows.find((entry) => entry.id === "router").running, true);
+  const window = plan.windows.find((entry) => entry.id === "router");
+  assert.equal(window.running, true);
+  // 关掉它之后能回收的必须算出来，否则用户只看到「正在运行」，没法判断值不值得关。
+  assert.equal(window.pendingCount, 2, "已归档 + 超 30 天各一条");
+  assert.equal(window.pendingBytes, 4096 + 8192);
   assert.match(plan.skipped[0].reason, /窗口正在运行/);
+  assert.equal(plan.skipped[0].copyBytes, 4096 + 8192);
+  assert.equal(plan.skipped[0].bytes, 4096 + 8192);
+  // 只跳过「不重要」的那两条：30 天内的副本压根不在待清列表里。
+  assert.ok(rollout);
 
   // 手动构造一个指向运行窗口的计划：执行阶段必须跳过它、不碰它的文件，并在结果里点名。
-  const forced = { items: [{ windowID: "router", home: router, id: "shared-1", rolloutPath: rollout, bytes: 4096, reason: "副本" }] };
+  const forced = { items: [{ windowID: "router", home: router, id: "archived-one", rolloutPath: rollout, bytes: 4096, reason: "副本" }] };
   const result = await applyCleanup({ root, plan: forced, confirm: true, runningIds });
   assert.equal(result.deletedThreads, 0);
   assert.deepEqual(result.skippedRunning, [{ id: "router", threads: 1, bytes: 4096 }]);
