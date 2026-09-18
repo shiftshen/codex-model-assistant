@@ -63,6 +63,7 @@ struct ProductResponse: Decodable {
     var routerRunning: Bool?
     var windows: [WorkWindow]?
     var window: WorkWindow?
+    var pid: Int?
 }
 
 // 每个窗口有自己的一份 CODEX_HOME 与浏览器数据目录，可以同时开多个，各自在 Codex 里换模型。
@@ -208,7 +209,9 @@ final class LibraryViewModel: ObservableObject {
         busy = true
         success = nil
         message = "正在新建可切换窗口（第一次启动需要几秒）…"
-        accept(await call(["new-window", initial]))
+        let response = await call(["new-window", initial])
+        accept(response)
+        raiseWindowIfNeeded(response.pid)
         busy = false
     }
 
@@ -217,8 +220,17 @@ final class LibraryViewModel: ObservableObject {
         busy = true
         success = nil
         message = "正在打开窗口…"
-        accept(await call(["open-window", id]))
+        let response = await call(["open-window", id])
+        accept(response)
+        // 已经在跑的窗口不会有新 pid，但同样应该被提到最前。
+        raiseWindowIfNeeded(response.pid ?? response.window?.pid ?? windows.first { $0.id == id }?.pid)
         busy = false
+    }
+
+    // 新窗口可能开在当前窗口后面，看起来像「点了没反应」。用进程号把它提到最前。
+    private func raiseWindowIfNeeded(_ pid: Int?) {
+        guard let pid, pid > 0, let app = NSRunningApplication(processIdentifier: pid_t(pid)) else { return }
+        app.activate(options: [.activateAllWindows])
     }
 
     func renameWindow(_ id: String, to name: String) async {

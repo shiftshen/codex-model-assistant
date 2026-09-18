@@ -15,6 +15,29 @@ function textContent(content) {
   return content.map((part) => part.text || "").join("\n");
 }
 
+// Anthropic 的 input_schema 只接受字符串 enum：Codex 的工具 schema 里带有数字/布尔 enum
+// （例如 request.tools[0].function_declarations[53]），原样转发会被判 400 整请求失败。
+// 这里递归清洗：能全量转成字符串的 enum 保留并转字符串，无法安全转换的直接去掉约束，
+// 保证 type 语义不变（模型仍按原类型传参），避免把数字字段悄悄变成字符串字段。
+export function sanitizeAnthropicSchema(value) {
+  if (Array.isArray(value)) return value.map(sanitizeAnthropicSchema);
+  if (!value || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "enum" && Array.isArray(entry)) {
+      const strings = entry.map((item) => (typeof item === "string" ? item : null));
+      if (strings.every((item) => item !== null)) out.enum = strings;
+      continue;
+    }
+    if (key === "const") {
+      if (typeof entry === "string") out.const = entry;
+      continue;
+    }
+    out[key] = sanitizeAnthropicSchema(entry);
+  }
+  return out;
+}
+
 export function toChat(payload, { stream = false } = {}) {
   const definitions = toolDefinitions(payload.tools);
   const messages = [];
@@ -70,7 +93,7 @@ export function toAnthropic(chat, { stream = false } = {}) {
   }
   const body = { model: chat.model, max_tokens: chat.max_tokens || 8192, messages, stream };
   if (system) body.system = system;
-  if (chat.tools?.length) body.tools = chat.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters }));
+  if (chat.tools?.length) body.tools = chat.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: sanitizeAnthropicSchema(tool.function.parameters) }));
   if (chat.tool_choice) body.tool_choice = { type: chat.tool_choice === "required" ? "any" : chat.tool_choice };
   return body;
 }

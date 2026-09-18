@@ -545,6 +545,7 @@ export class ProductService {
     const running = await this.runningWindows();
     const pid = running.get(id);
     if (!pid) return { ...(await this.switchSummary()), delivered: false, message: "该窗口没有在运行" };
+    await this.assertWindowProcess(pid, id);
     try { await this.killWindowProcess(pid); }
     catch (error) { if (error.code !== "ESRCH") throw error; }
     for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -559,7 +560,36 @@ export class ProductService {
     };
   }
   async killWindowProcess(pid) {
-    process.kill(pid, "SIGTERM");
+    const target = Number(pid);
+    if (!Number.isInteger(target) || target <= 0) throw new Error("窗口进程号无效，已取消关闭");
+    if (target === process.pid || target === process.ppid) throw new Error("拒绝结束助手自身的进程");
+    if (await this.windowProcessCommand(target) === "") return;
+    try {
+      // 窗口是 detached 启动的，进程组组长就是它自己：连同渲染/工具子进程一起结束，避免残留子进程占着 browser-data。
+      process.kill(-target, "SIGTERM");
+    } catch (error) {
+      if (!["ESRCH", "EPERM"].includes(error.code)) throw error;
+      process.kill(target, "SIGTERM");
+    }
+  }
+  // 取进程命令行；进程已退出时返回空字符串（正常情况，不算错误）。
+  async windowProcessCommand(pid) {
+    try {
+      const { stdout } = await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "args="], { maxBuffer: 1024 * 1024 });
+      return String(stdout).trim();
+    } catch (error) {
+      if (error.code === 1 || /no such process/i.test(String(error.stderr ?? ""))) return "";
+      throw error;
+    }
+  }
+  // 关窗前确认这个 PID 真的是目标窗口：命令行必须带该窗口自己的 --user-data-dir。
+  // 多开时最怕「关一个结果全关」，所以这条校验不通过就直接拒绝动手。
+  async assertWindowProcess(pid, id) {
+    const command = await this.windowProcessCommand(pid);
+    if (command === "") return false;
+    const expected = `--user-data-dir=${windowPaths(this.store.root, id).userDataPath}`;
+    if (!command.includes(expected)) throw new Error(`PID ${pid} 不是「${id}」窗口的进程，已取消操作（避免误伤其它窗口）`);
+    return true;
   }
   async deleteWindow(id) {
     if (id === legacyWindowID) throw new Error("「窗口 1」是内置窗口，不能删除；可以改名或先关闭它");
