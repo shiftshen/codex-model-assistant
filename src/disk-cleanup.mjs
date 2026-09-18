@@ -522,9 +522,21 @@ export async function systemDisk(mount = "/") {
   return { totalBytes: total, usedBytes: (stats.blocks - stats.bfree) * stats.bsize, freeBytes: free, freePercent: total > 0 ? (free / total) * 100 : 100 };
 }
 
+// 本地 Time Machine 快照会钉住刚删掉的文件的磁盘块：清理报告说释放了 5 GB，
+// 但 df 一动不动，用户会以为清理坏了。删快照要管理员密码，所以这里只如实报数量。
+export async function localSnapshotCount() {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/tmutil", ["listlocalsnapshots", "/"], { timeout: 15000 });
+    return String(stdout).split("\n").filter((line) => line.includes(".local")).length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function diskUsage({ root, plan, mount = "/" }) {
-  const [totalBytes, disk] = await Promise.all([directorySize(root), systemDisk(mount)]);
+  const [totalBytes, disk, snapshots] = await Promise.all([directorySize(root), systemDisk(mount), localSnapshotCount()]);
   return {
+    localSnapshots: snapshots,
     totalBytes,
     perWindow: plan.windows,
     reclaimable: plan.reclaimBytes,

@@ -153,6 +153,9 @@ export async function readWindowCurrentModel(homePath) {
   }
 }
 
+// 目录大小的短时缓存：见 unmanagedWindows()，避免每次刷新界面都跑一遍 du。
+const unmanagedSizeCache = { at: 0, map: new Map() };
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -211,16 +214,23 @@ export class ProductService {
       }
     }
     if (!found.length) return found;
-    // 一次 du 算完所有目录，比逐个读文件快得多。
-    try {
-      const { stdout } = await execFileAsync("/usr/bin/du", ["-sk", ...found.map((entry) => entry.root)], { maxBuffer: 8 * 1024 * 1024 });
-      for (const line of String(stdout).split("\n")) {
-        const [kb, ...rest] = line.trim().split(/\s+/);
-        const target = rest.join(" ");
-        const hit = found.find((entry) => entry.root === target);
-        if (hit && Number(kb) > 0) hit.bytes = Number(kb) * 1024;
-      }
-    } catch { }
+    // du 要遍历好几个 GB，而 switch-status 每次切回助手都会被调一次——不缓存就会把界面卡住。
+    // 目录大小变化很慢，30 秒内直接复用上一次的结果。
+    const now = Date.now();
+    if (now - unmanagedSizeCache.at > 30000) {
+      try {
+        const { stdout } = await execFileAsync("/usr/bin/du", ["-sk", ...found.map((entry) => entry.root)], { maxBuffer: 8 * 1024 * 1024 });
+        const map = new Map();
+        for (const line of String(stdout).split("\n")) {
+          const [kb, ...rest] = line.trim().split(/\s+/);
+          const target = rest.join(" ");
+          if (target && Number(kb) > 0) map.set(target, Number(kb) * 1024);
+        }
+        unmanagedSizeCache.at = now;
+        unmanagedSizeCache.map = map;
+      } catch { unmanagedSizeCache.at = now; }
+    }
+    for (const entry of found) entry.bytes = unmanagedSizeCache.map.get(entry.root) ?? 0;
     return found.sort((left, right) => right.bytes - left.bytes);
   }
 

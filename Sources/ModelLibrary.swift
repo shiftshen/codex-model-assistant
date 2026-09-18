@@ -79,6 +79,8 @@ struct ProductResponse: Decodable {
 struct DiskUsage: Decodable {
     var totalBytes: Int64
     var reclaimable: Int64
+    // 本地 Time Machine 快照会钉住刚删掉的磁盘块：清理说释放了 5 GB，df 却一动不动。
+    var localSnapshots: Int?
     var freeDiskPercent: Double
     var freeDiskBytes: Int64?
     var perWindow: [DiskWindow]?

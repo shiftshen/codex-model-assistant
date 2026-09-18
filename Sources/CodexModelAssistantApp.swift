@@ -236,6 +236,10 @@ struct ModelLibraryView: View {
             if let disk = library.disk {
                 Text("助手目录 \(humanBytes(disk.totalBytes)) · 可回收 \(humanBytes(disk.reclaimable)) · 系统剩余 \(Int(disk.freeDiskPercent.rounded()))%")
                     .font(.caption).foregroundStyle(.secondary)
+                if let snapshots = disk.localSnapshots, snapshots > 0 {
+                    Text("· \(snapshots) 个本地快照钉着空间").font(.caption).foregroundStyle(.orange)
+                        .help("清理出来的空间会被本地 Time Machine 快照钉住，删掉快照才会真正释放")
+                }
             } else {
                 Text("点「检查占用」算出可回收多少").font(.caption).foregroundStyle(.secondary)
             }
@@ -268,8 +272,13 @@ struct ModelLibraryView: View {
                         Button("打开数据目录") { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.codex/model-assistant")) }
                     } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).frame(width: 28).help("备份与诊断")
-                    Button("完成") { showModels = false }.keyboardShortcut(.cancelAction)
-                }.padding(20).disabled(library.busy)
+                    // 关闭按钮必须是这个弹窗里最显眼的东西：macOS 的 sheet 点外面不会关，
+                    // 找不到它就只能强退应用。同时保留 Esc。
+                    Button("完成") { showModels = false }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.cancelAction)
+                        .help("关闭模型库，回到窗口面板（按 Esc 也行）")
+                }.padding(.horizontal, 20).padding(.vertical, 14)
                 Divider()
                 if library.diskNeedsAttention, let disk = library.disk {
                     HStack(spacing: 10) {
@@ -291,7 +300,7 @@ struct ModelLibraryView: View {
                 else { ContentUnavailableView("还没有模型", systemImage: "square.stack.3d.up", description: Text("点「添加模型」，选择供应商模板开始配置。")) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 960, height: 640)
+        .frame(width: 940, height: 600)
     }
 
     private func renameSheet(_ window: WorkWindow) -> some View {
@@ -399,6 +408,9 @@ struct ModelLibraryView: View {
             Toggle("显示归档模型", isOn: $library.showArchived).toggleStyle(.checkbox).font(.caption)
             Toggle("显示隐藏条目", isOn: $library.showHidden).toggleStyle(.checkbox).font(.caption)
             Text("\(library.readyCount) 个配置就绪 · 同一本地服务请求排队执行").font(.caption).foregroundStyle(.secondary)
+            Button { showModels = false } label: { Label("完成", systemImage: "checkmark").frame(maxWidth: .infinity) }
+                .keyboardShortcut(.cancelAction)
+                .help("关闭模型库，回到窗口面板（按 Esc 也行）")
         }
         .padding(16).frame(width: 270).background(Color(nsColor: .controlBackgroundColor))
     }
@@ -431,6 +443,11 @@ struct ModelLibraryView: View {
                          ? "官方库有 \(count) 条已归档会话（\(humanBytes(official.bytes))）；官方 Codex 正在运行，先退出它才能清"
                          : "官方库有 \(count) 条已归档会话可清 · \(humanBytes(official.bytes))（原件，不可恢复）")
                         .font(.caption2).foregroundStyle(official.officialRunning == true ? Color.secondary : Color.orange)
+                }
+                if let snapshots = disk.localSnapshots, snapshots > 0 {
+                    Text("有 \(snapshots) 个本地 Time Machine 快照：刚清出来的空间会被它们钉住，磁盘数字不会立刻变大。\n删快照要管理员密码：sudo tmutil deletelocalsnapshots /（会丢掉那个恢复点）")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let skipped = library.diskPlan?.skipped, !skipped.isEmpty {
                     // 一般只有一个窗口在跑，合成一段文本比 ForEach 更省事，也避免结果构建器里的重载歧义。
@@ -587,7 +604,7 @@ struct CodexModelAssistantApp: App {
 
     var body: some Scene {
         WindowGroup { ModelLibraryView() }
-            .defaultSize(width: 1000, height: 700)
+            .defaultSize(width: 1040, height: 780)
             .commands { CommandGroup(replacing: .newItem) { } }
     }
 }
