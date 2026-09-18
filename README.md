@@ -1,10 +1,11 @@
-# Codex 模型助手 2.3
+# Codex 模型助手 2.3.2
 
 原生 macOS 模型管理与 Codex 多开工具。安装应用位于 `/Applications/Codex 模型助手.app`。
 
 ## 功能
 
-- Ornith / Qwen 本地主力，付费专家 MCP 能力；按需、仅手动、停用模式，跨进程次数限额、缓存去重、用量账本。
+- 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
+- 本地模型（Ollama 上的 Ornith / Qwen）降级为**可选供应商**：未通过开发能力验收，已归档，默认不出现，可在「显示归档模型」里查看；重新评估的条件见 `docs/LOCAL-QUALIFICATION.md`。专家策略面板里的本地模型选择保留，只用来自行评估。
 
 - 新增和编辑模型、修改 API Key、供应商模板、模型自动发现、搜索、归档恢复。
 - 官方 ChatGPT 登录独立入口；DeepSeek 使用官方 `https://api.deepseek.com/v1`。

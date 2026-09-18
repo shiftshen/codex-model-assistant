@@ -1,0 +1,23 @@
+name: CI
+
+# 测试依赖 /usr/bin/sqlite3 和 df 的行为差异，所以必须跑在 macOS 上，不能用 ubuntu。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: 确认依赖存在
+        run: |
+          node --version
+          /usr/bin/sqlite3 --version
+      - run: npm test

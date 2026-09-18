@@ -15,5 +15,16 @@ ARCH="$(uname -m)"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 IMAGE="$RELEASE/Codex-Model-Assistant-$VERSION-$ARCH.dmg"
 hdiutil create -quiet -volname "Codex 模型助手 $VERSION" -srcfolder "$STAGING" -ov -format UDZO "$IMAGE"
-shasum -a 256 "$IMAGE" > "$RELEASE/SHA256SUMS.txt"
+# 累积写入：以前是 > 覆盖，跑一次就把 2.0.0/2.1.0 的校验值弄丢了。
+SUMS="$RELEASE/SHA256SUMS.txt"
+NAME="$(basename "$IMAGE")"
+DIGEST="$(shasum -a 256 "$IMAGE" | awk '{print $1}')"
+if [[ -f "$SUMS" ]]; then
+  grep -v "  $NAME\$" "$SUMS" > "$SUMS.tmp" || true
+else
+  : > "$SUMS.tmp"
+fi
+printf '%s  %s\n' "$DIGEST" "$NAME" >> "$SUMS.tmp"
+sort -k2 "$SUMS.tmp" > "$SUMS"
+rm -f "$SUMS.tmp"
 echo "$IMAGE"

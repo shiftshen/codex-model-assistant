@@ -66,6 +66,62 @@ struct ProductResponse: Decodable {
     var orphans: [WorkWindow]?
     var window: WorkWindow?
     var pid: Int?
+    var disk: DiskUsage?
+    var cleanupPlan: DiskPlan?
+    var cleanup: CleanupResult?
+}
+
+// 磁盘占用与可回收量。助手目录里同一批会话会在每个窗口各存一份，是这套多窗口机制最容易失控的地方。
+struct DiskUsage: Decodable {
+    var totalBytes: Int64
+    var reclaimable: Int64
+    var freeDiskPercent: Double
+    var freeDiskBytes: Int64?
+    var perWindow: [DiskWindow]?
+}
+
+struct DiskWindow: Decodable, Hashable {
+    var id: String
+    var running: Bool?
+    var threads: Int?
+    var copies: Int?
+    var originals: Int?
+    var reclaimBytes: Int64?
+    var reason: String?
+}
+
+struct DiskPlan: Decodable {
+    var reclaimBytes: Int64
+    var staleDays: Int?
+    var items: DiskPlanItems?
+    var keepOriginals: DiskPlanKeep?
+    var skipped: [DiskWindow]?
+}
+
+struct DiskPlanItems: Decodable {
+    var count: Int
+    var bytes: Int64
+}
+
+struct DiskPlanKeep: Decodable {
+    var count: Int
+    var bytes: Int64
+}
+
+struct CleanupResult: Decodable {
+    var deletedFiles: Int?
+    var deletedThreads: Int?
+    var freedBytes: Int64?
+    var backupManifest: String?
+}
+
+func humanBytes(_ bytes: Int64?) -> String {
+    var size = Double(bytes ?? 0)
+    for unit in ["B", "KB", "MB", "GB", "TB"] {
+        if size < 1024 || unit == "TB" { return unit == "B" ? "\(Int(size)) B" : String(format: "%.1f %@", size, unit) }
+        size /= 1024
+    }
+    return "\(Int(size)) B"
 }
 
 // 每个窗口有自己的一份 CODEX_HOME 与浏览器数据目录，可以同时开多个，各自在 Codex 里换模型。
@@ -92,7 +148,8 @@ struct LocalRuntimeStatus: Decodable {
 final class LibraryViewModel: ObservableObject {
     @Published var models: [ManagedModel] = []
     @Published var templates: [ProviderTemplate] = []
-    @Published var selectedID = "s5090-ornith"
+    // 不预设某个本地模型：默认选官方入口，专家策略里配了什么就显示什么，取不到就显示「未配置」。
+    @Published var selectedID = ""
     @Published var search = ""
     @Published var showArchived = false
     @Published var showHidden = false
@@ -114,6 +171,9 @@ final class LibraryViewModel: ObservableObject {
     @Published var windows: [WorkWindow] = []
     @Published var orphans: [WorkWindow] = []
     @Published var newWindowModel = ""
+    @Published var disk: DiskUsage?
+    @Published var diskPlan: DiskPlan?
+    @Published var showCleanupConfirm = false
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
@@ -125,9 +185,9 @@ final class LibraryViewModel: ObservableObject {
         }
     }
     var readyCount: Int { models.filter { $0.ready && !$0.archived }.count }
-    var preferredLocalID: String { expertPolicy?.preferredLocal ?? localStatus?.preferredLocal ?? "s5090-ornith" }
-    var canLaunchPreferredLocal: Bool { models.contains { $0.id == preferredLocalID && $0.ready && !$0.archived } }
-    var preferredLocalName: String { canLaunchPreferredLocal ? (models.first { $0.id == preferredLocalID }?.name ?? "未配置") : "已停用" }
+    var preferredLocalID: String { expertPolicy?.preferredLocal ?? localStatus?.preferredLocal ?? "" }
+    var canLaunchPreferredLocal: Bool { !preferredLocalID.isEmpty && models.contains { $0.id == preferredLocalID && $0.ready && !$0.archived } }
+    var preferredLocalName: String { preferredLocalID.isEmpty ? "未配置" : (canLaunchPreferredLocal ? (models.first { $0.id == preferredLocalID }?.name ?? "未配置") : "已停用") }
     func isLocal(_ model: ManagedModel) -> Bool { ["s5090-ornith", "s5090-qwen"].contains(model.id) }
     func isRunning(_ model: ManagedModel) -> Bool { localStatus?.runningInstances.contains(model.id) == true }
     func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
@@ -196,7 +256,42 @@ final class LibraryViewModel: ObservableObject {
         if let value = response.routerRunning { routerRunning = value }
         if let values = response.windows { windows = values }
         if let values = response.orphans { orphans = values }
+        if let value = response.disk { disk = value }
+        if let value = response.cleanupPlan { diskPlan = value }
         success = response.ok
+    }
+
+    // 助手目录里同一批会话在每个窗口各存一份，堆积起来能到几十 GB，所以要能看见、能清。
+    func refreshDisk() async {
+        busy = true
+        let response = await call(["disk-usage"], timeout: 600)
+        accept(response)
+        busy = false
+    }
+
+    // 清理会删会话副本，只在这里、只在确认后执行；官方库和窗口独有原件都不动。
+    func applyCleanup() async {
+        busy = true
+        success = nil
+        message = "正在清理会话副本（窗口自己的任务库会收缩，可能要一两分钟）…"
+        // VACUUM 在大库上比较慢，给足时间。
+        let response = await call(["cleanup-apply", "--confirm"], timeout: 3600)
+        accept(response)
+        busy = false
+    }
+
+    var cleanupPrompt: String {
+        let plan = diskPlan
+        let count = plan?.items?.count ?? 0
+        let bytes = humanBytes(plan?.reclaimBytes ?? disk?.reclaimable)
+        let keep = plan?.keepOriginals?.count ?? 0
+        return "将删除 \(count) 个会话副本、释放 \(bytes)；官方库和 \(keep) 条窗口独有对话不受影响。被清掉的对话仍可用「导入全部」从官方库取回。"
+    }
+
+    // 目录超过 20 GB 或系统剩余不足 15% 时提醒一次。
+    var diskNeedsAttention: Bool {
+        guard let disk else { return false }
+        return disk.totalBytes >= 20 * 1024 * 1024 * 1024 || disk.freeDiskPercent < 15
     }
 
     func refresh() async {
@@ -204,7 +299,10 @@ final class LibraryViewModel: ObservableObject {
         let gateway = await call(["start-gateway"])
         let response = await call(["library"])
         accept(response)
-        if selectedID == "s5090-ornith", let policy = response.expertPolicy { selectedID = policy.preferredLocal }
+        // 没选过（或原先选中的条目已经不在库里）就落到官方入口，不再硬编码某个本地模型。
+        if selectedID.isEmpty || !models.contains(where: { $0.id == selectedID }) {
+            selectedID = models.contains { $0.id == "official" } ? "official" : (models.first?.id ?? "")
+        }
         if selected?.archived == true && !showArchived { selectedID = "official" }
         if response.ok { message = gateway.ok ? "模型库已就绪。选择模型，配置密钥并验证后启动。" : (gateway.message ?? "模型网关未启动"); success = gateway.ok ? nil : false }
         busy = false

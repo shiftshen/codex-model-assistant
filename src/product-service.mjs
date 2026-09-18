@@ -10,6 +10,7 @@ import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from ".
 import { attachExpertConfig, localExpertInstructions } from "./local-expert-config.mjs";
 import { localCallers, readExpertPolicy } from "./expert-policy.mjs";
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
+import { cleanupPlan, diskUsage } from "./disk-cleanup.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
 import {
   allocateWindow,
@@ -867,6 +868,16 @@ export class ProductService {
     )
       ? "项目分组关系缺失：会话仍在，但侧边栏可能只剩列表；可直接点「修复工作窗口」补回"
       : "项目分组元数据：正常";
+    // 磁盘也要出现在诊断里：副本堆到 30 GB 以上是这套多窗口机制最容易失控的地方。
+    let diskLine = "磁盘：无法读取";
+    try {
+      const plan = await cleanupPlan({ root: this.store.root, officialHome: sharedHome, runningIds: new Set([...(await this.runningWindows()).keys()]) });
+      const usage = await diskUsage({ root: this.store.root, plan });
+      diskLine = `磁盘：助手目录 ${Math.round(usage.totalBytes / 1024 ** 3 * 10) / 10} GB，可回收 ${Math.round(usage.reclaimable / 1024 ** 3 * 10) / 10} GB（${plan.items.length} 个会话副本），系统剩余 ${usage.freeDiskPercent.toFixed(1)}%；官方库与 ${plan.keepOriginals.count} 条原件不动`;
+      if (plan.skipped.length) diskLine += `；${plan.skipped.map((entry) => entry.id).join("、")} 正在运行，关闭后再清`;
+    } catch (error) {
+      diskLine = `磁盘：读取失败（${error.message}）`;
+    }
     return {
       message: [
         `模型网关：${gateway}`,
@@ -875,6 +886,7 @@ export class ProductService {
         `可切换窗口：${table.length} 个模型可选（官方 ChatGPT 登录与已归档模型不在其中）`,
         switchLine,
         switchHealth,
+        diskLine,
         `本窗口可切换的条目：${switchable.length ? switchable.join("、") : "尚未开启，可在条目里点「本窗口也可切换模型」"}`,
         `配置了备用模型：${prepared ? `${prepared} 个` : "无，可在编辑模型里选「主模型失败时改用」"}`,
         `真实推理已验证：${verifiedCount}/${active.length}${missingKey.length ? `；还缺 Key：${missingKey.join("、")}` : ""}`,

@@ -26,6 +26,22 @@ struct ModelLibraryView: View {
                     .menuStyle(.borderlessButton).frame(width: 28).help("备份与诊断")
                 }.padding(24).disabled(library.busy)
                 Divider()
+                if library.diskNeedsAttention, let disk = library.disk {
+                    HStack(spacing: 10) {
+                        Image(systemName: "internaldrive.fill").foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("助手目录占 \(humanBytes(disk.totalBytes))，可回收 \(humanBytes(disk.reclaimable))").font(.caption.weight(.semibold))
+                            Text("多开的窗口各存了一份同样的会话；清理只删副本，官方库和窗口独有对话不动。").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("去清理") { library.showCleanupConfirm = true }
+                            .buttonStyle(.borderedProminent).controlSize(.small)
+                            .disabled(library.busy || disk.reclaimable <= 0)
+                    }
+                    .padding(.horizontal, 24).padding(.vertical, 10)
+                    .background(Color.orange.opacity(0.1))
+                    Divider()
+                }
                 if let selected = library.selected { detail(selected) }
                 else { ContentUnavailableView("还没有模型", systemImage: "square.stack.3d.up", description: Text("点击添加模型，选择供应商模板开始配置。")) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -46,7 +62,11 @@ struct ModelLibraryView: View {
         }
         .sheet(isPresented: $library.showExpert) { ExpertSettingsView(library: library) }
         .sheet(isPresented: $library.showSwitch) { switchWindow }
-        .task { await library.refresh() }
+        .task {
+            await library.refresh()
+            // 启动时就把磁盘占用算出来，超阈值时下面的提示条才有内容。
+            await library.refreshDisk()
+        }
     }
 
     private var switchWindow: some View {
@@ -231,12 +251,7 @@ struct ModelLibraryView: View {
                 }
             }
             Divider()
-            VStack(alignment: .leading, spacing: 6) {
-                Text("当前本地主力：\(library.preferredLocalName)").font(.caption.weight(.semibold))
-                Text(library.localStatus?.message ?? "正在读取本地运行状态…").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Button { Task { await library.launchPreferredLocal() } } label: { Label("启动本地主力", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }
-                .buttonStyle(.bordered).disabled(library.busy || !library.canLaunchPreferredLocal)
+            diskSection
             Button { Task { await library.newWindow(initial: library.newWindowModel) } } label: { Label("新建可切换窗口", systemImage: "macwindow.badge.plus").frame(maxWidth: .infinity) }
                 .buttonStyle(.borderedProminent).disabled(library.busy || library.switchModels.isEmpty)
                 .help("再开一个独立的 Codex 窗口：它有自己的任务库和运行状态，可以和现有窗口同时干活，窗口里随时换模型")
@@ -252,6 +267,48 @@ struct ModelLibraryView: View {
             Text("\(library.readyCount) 个配置就绪 · 同一本地服务请求排队执行").font(.caption).foregroundStyle(.secondary)
         }
         .padding(16).frame(width: 270).background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // 磁盘：同一批会话在每个窗口各存一份，是这套多开机制最容易失控的地方，所以放在侧边栏常驻可见。
+    private var diskSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("磁盘").font(.caption.weight(.semibold))
+                Spacer()
+                if let disk = library.disk {
+                    Text("可回收 \(humanBytes(disk.reclaimable))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(disk.reclaimable > 0 ? .orange : .secondary)
+                }
+            }
+            if let disk = library.disk {
+                Text("助手目录 \(humanBytes(disk.totalBytes)) · 系统剩余 \(Int(disk.freeDiskPercent.rounded()))%")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if let plan = library.diskPlan, let count = plan.items?.count, count > 0 {
+                    Text("\(count) 个会话副本可清 · \(plan.keepOriginals?.count ?? 0) 条原件保留")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if let skipped = library.diskPlan?.skipped, !skipped.isEmpty {
+                    Text("\(skipped.map(\.id).joined(separator: "、")) 正在运行，关闭后再清")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("点「检查占用」算出可回收多少").font(.caption2).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                Button { Task { await library.refreshDisk() } } label: { Label("检查占用", systemImage: "internaldrive").frame(maxWidth: .infinity) }
+                    .buttonStyle(.bordered).disabled(library.busy)
+                Button { library.showCleanupConfirm = true } label: { Label("清理", systemImage: "trash").frame(maxWidth: .infinity) }
+                    .buttonStyle(.bordered).disabled(library.busy || (library.disk?.reclaimable ?? 0) <= 0)
+                    .help("删除各窗口里重复的会话副本，释放磁盘；官方库和窗口独有对话不动")
+            }
+        }
+        .confirmationDialog("确认清理会话副本？", isPresented: $library.showCleanupConfirm, titleVisibility: .visible) {
+            Button("删除并释放空间", role: .destructive) { Task { await library.applyCleanup() } }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(library.cleanupPrompt)
+        }
     }
 
     private func detail(_ model: ManagedModel) -> some View {
