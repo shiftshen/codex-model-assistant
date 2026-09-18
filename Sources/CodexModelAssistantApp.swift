@@ -267,6 +267,13 @@ struct ModelLibraryView: View {
 
     // 「我的请求到底走了谁」：用户对扣费最直接的疑问，摊在状态条上，不用去翻日志。
     private var recentHostSummary: String? {
+        // 按天累计优先：跟后台对账时看的是「今天」，不是最近 10 条。
+        if let today = library.todayUsage, (today.total ?? 0) > 0 {
+            let hosts = (today.hosts ?? [:]).sorted { $0.value > $1.value }.map { "\($0.key) ×\($0.value)" }
+            let fallbacks = (today.fallbacks ?? [:]).reduce(0) { $0 + $1.value }
+            let tail = fallbacks > 0 ? "　⚠️ 其中 \(fallbacks) 次用了备用" : ""
+            return "今天 \(today.total ?? 0) 次：\(hosts.joined(separator: "、"))\(tail)"
+        }
         guard !library.recentRoutes.isEmpty else { return nil }
         var counts: [String: Int] = [:]
         for entry in library.recentRoutes { counts[entry.host, default: 0] += 1 }

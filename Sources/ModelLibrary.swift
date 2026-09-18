@@ -64,6 +64,7 @@ struct ProductResponse: Decodable {
     var unmanaged: [UnmanagedWindow]?
     var fallbacks: [FallbackEvent]?
     var recentRoutes: [RecentRoute]?
+    var todayUsage: DayUsage?
     var window: WorkWindow?
     var pid: Int?
     var disk: DiskUsage?
@@ -176,6 +177,14 @@ struct WorkWindow: Decodable, Identifiable, Hashable {
 // 网关动用备用模型的事件。备用条目的计费方可能和首选完全不同，
 // 所以这不是日志细节，是要摆到用户面前的账单提醒。
 // 每次请求实际走了哪个上游。用户对扣费的疑问，这条是直接答案。
+// 按天累计的「请求去了哪些上游」。用户拿它跟两边后台对账。
+struct DayUsage: Decodable, Hashable {
+    var day: String
+    var hosts: [String: Int]?
+    var fallbacks: [String: Int]?
+    var total: Int?
+}
+
 struct RecentRoute: Decodable, Identifiable, Hashable {
     var at: String
     var route: String
@@ -232,6 +241,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var unmanaged: [UnmanagedWindow] = []
     @Published var fallbacks: [FallbackEvent] = []
     @Published var recentRoutes: [RecentRoute] = []
+    @Published var todayUsage: DayUsage?
     @Published var newWindowModel = ""
     @Published var disk: DiskUsage?
     @Published var diskPlan: DiskPlan?
@@ -350,6 +360,7 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.unmanaged { unmanaged = values }
         if let values = response.fallbacks { fallbacks = values }
         if let values = response.recentRoutes { recentRoutes = values }
+        if let value = response.todayUsage { todayUsage = value }
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
         if let value = response.diskPolicy { diskPolicy = value }

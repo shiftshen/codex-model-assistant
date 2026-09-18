@@ -260,6 +260,27 @@ export async function noteRoute(root, route, { model = "", fallback = false } = 
     list.push(entry);
     await fsPromises.writeFile(file, JSON.stringify(list.slice(-100), null, 2), { mode: 0o600 });
   } catch { }
+  // 滚动 100 条盖不住「今天我的请求都去了谁」——那才是用户对账时要的。
+  // 所以另存一份按天累计的计数：{ "2026-09-19": { hosts: {...}, fallbacks: {...} } }
+  try {
+    const file = path.join(root, "usage-by-day.json");
+    let data = {};
+    try { data = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
+    if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
+    const now = new Date();
+    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const bucket = data[day] && typeof data[day] === "object" ? data[day] : { hosts: {}, fallbacks: {} };
+    bucket.hosts = { ...(bucket.hosts || {}) };
+    bucket.fallbacks = { ...(bucket.fallbacks || {}) };
+    const key = host || "(无域名)";
+    bucket.hosts[key] = (bucket.hosts[key] || 0) + 1;
+    if (fallback) bucket.fallbacks[key] = (bucket.fallbacks[key] || 0) + 1;
+    data[day] = bucket;
+    // 只留最近 60 天，避免无限长
+    const days = Object.keys(data).sort();
+    for (const stale of days.slice(0, Math.max(0, days.length - 60))) delete data[stale];
+    await fsPromises.writeFile(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+  } catch { }
   return entry;
 }
 

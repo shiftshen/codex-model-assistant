@@ -186,6 +186,23 @@ export async function readRecentRoutes(root, limit = 8) {
   }
 }
 
+// 按天读「请求去了哪些上游」。用户拿它跟 DeepSeek / opencode 两边的后台对账，
+// 比任何解释都有用——数字对不上就是有问题，对得上就可以放心。
+export async function readUsageReport(root, days = 1) {
+  try {
+    const data = JSON.parse(await fs.readFile(path.join(root, "usage-by-day.json"), "utf8"));
+    const wanted = Object.keys(data).sort().slice(-Math.max(1, days));
+    return wanted.map((day) => ({
+      day,
+      hosts: data[day]?.hosts ?? {},
+      fallbacks: data[day]?.fallbacks ?? {},
+      total: Object.values(data[day]?.hosts ?? {}).reduce((sum, n) => sum + Number(n || 0), 0),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -664,6 +681,7 @@ export class ProductService {
       // 界面必须能把它摆到用户面前，而不是只躺在日志里。
       fallbacks: await readFallbackEvents(this.store.root),
       recentRoutes: await readRecentRoutes(this.store.root),
+      todayUsage: (await readUsageReport(this.store.root, 1)).at(-1) ?? null,
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
       unmanaged: await this.unmanagedWindows(),
       windows: await Promise.all(registry.windows.map(async (entry) => ({

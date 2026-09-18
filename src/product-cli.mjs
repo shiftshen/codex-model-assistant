@@ -6,7 +6,7 @@ import { limitedJSON } from "./model-gateway.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
 import { applyCleanup, applyOfficialArchived, cleanupPlan, describePlan, diskUsage, officialArchivedPlan } from "./disk-cleanup.mjs";
 import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
-import { readRecentRoutes } from "./product-service.mjs";
+import { readRecentRoutes, readUsageReport } from "./product-service.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 
 const store = new ModelStore();
@@ -56,6 +56,17 @@ async function main() {
   // 侧边栏点一个模型：开着的窗口优先复用，官方入口开真官方。
   if (command === "open-codex") return service.openCodex(id || "");
   if (command === "delete-unmanaged-window") return service.deleteUnmanagedWindow(id || "");
+  // 「今天我的请求都去了谁」：跟两边后台对账用的。
+  if (command === "usage-report") {
+    const days = Number(id) > 0 ? Number(id) : 1;
+    const report = await readUsageReport(store.root, days);
+    const lines = report.map((entry) => {
+      const hosts = Object.entries(entry.hosts).map(([h, n]) => `${h} ×${n}`).join("、") || "无请求";
+      const fb = Object.entries(entry.fallbacks).map(([h, n]) => `${h} ×${n}`).join("、");
+      return `${entry.day}：${entry.total} 次 —— ${hosts}${fb ? `（其中备用：${fb}）` : "（无备用）"}`;
+    });
+    return { ok: true, report, message: lines.join("\n") || "还没有记录" };
+  }
   // 「我的请求到底走了谁」：直接列最近若干次请求的实际上游。
   if (command === "recent-routes") {
     const routes = await readRecentRoutes(store.root, Number(id) > 0 ? Number(id) : 10);

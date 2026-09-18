@@ -6,7 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import { ModelStore } from "../src/model-store.mjs";
 import { createGateway, noteFallback, noteRoute } from "../src/model-gateway.mjs";
-import { ProductService, readFallbackEvents, readRecentRoutes } from "../src/product-service.mjs";
+import { ProductService, readFallbackEvents, readRecentRoutes, readUsageReport } from "../src/product-service.mjs";
 
 // 这一组测试是为了钉住一个真实踩过的坑：
 // model-gateway 里 import 的是 node:fs（回调版），但「留痕」函数用 await fs.readFile / fs.writeFile 写文件。
@@ -119,4 +119,23 @@ test("首选失败改用备用时，两个文件都要留下证据，界面才�
   const summary = await service.switchSummary();
   assert.equal(summary.fallbacks.length, 1);
   assert.equal(summary.recentRoutes[0].route, "backup");
+});
+
+// 用户要跟两边后台对账，需要的是「今天请求都去了谁」，不是最近 10 条。
+// 这条钉住按天累计真的在写、且读得回来。
+test("按天累计：今天每个上游各收到多少次请求", async (context) => {
+  const store = await fixture(context);
+  await noteRoute(store.root, { id: "a", name: "A", endpoint: "https://opencode.ai/zen/go/v1" }, {});
+  await noteRoute(store.root, { id: "a", name: "A", endpoint: "https://opencode.ai/zen/go/v1" }, {});
+  await noteRoute(store.root, { id: "b", name: "B", endpoint: "https://api.deepseek.com/v1" }, { fallback: true });
+
+  const report = await readUsageReport(store.root, 1);
+  assert.equal(report.length, 1, "只该有今天这一天的桶");
+  assert.equal(report[0].total, 3);
+  assert.equal(report[0].hosts["opencode.ai"], 2);
+  assert.equal(report[0].hosts["api.deepseek.com"], 1);
+  assert.equal(report[0].fallbacks["api.deepseek.com"], 1, "备用要单独计数，否则看不出来钱被记到了别处");
+
+  const summary = await new ProductService(store).switchSummary();
+  assert.equal(summary.todayUsage.total, 3);
 });
