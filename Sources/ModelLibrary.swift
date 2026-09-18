@@ -254,6 +254,26 @@ final class LibraryViewModel: ObservableObject {
         return windows.contains { $0.running == true && $0.initialModel == model.id }
     }
 
+    // 主程序是通用二进制，同一份 app 在 Apple Silicon 和 Intel 上都会跑，
+    // 所以 node 也带了两份，这里按当前这一片（slice）的架构选。
+    // 选错的话表现是「命令执行不了」这种没头没尾的报错，很难查。
+    nonisolated static func bundledNode(in resources: URL) -> URL {
+        #if arch(arm64)
+        let preferred = ["node-arm64", "node"]
+        #else
+        let preferred = ["node-x64", "node"]
+        #endif
+        for name in preferred {
+            let url = resources.appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: url.path) { return url }
+        }
+        // 兜底：开发机器上直接跑源码构建时，用系统里的 node。
+        for path in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+            if FileManager.default.isExecutableFile(atPath: path) { return URL(fileURLWithPath: path) }
+        }
+        return resources.appendingPathComponent("node")
+    }
+
     // 管道读取结果：子进程的输出必须边跑边收，只等不读会在输出超过管道缓冲时两边一起卡死。
     private final class PipeCollector: @unchecked Sendable {
         private let lock = NSLock()
@@ -270,8 +290,7 @@ final class LibraryViewModel: ObservableObject {
             let process = Process()
             let output = Pipe()
             let standardInput = Pipe()
-            let bundledNode = resources.appendingPathComponent("node")
-            process.executableURL = FileManager.default.isExecutableFile(atPath: bundledNode.path) ? bundledNode : URL(fileURLWithPath: "/opt/homebrew/bin/node")
+            process.executableURL = LibraryViewModel.bundledNode(in: resources)
             process.arguments = [resources.appendingPathComponent("runtime/product-cli.mjs").path] + arguments
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice

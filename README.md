@@ -69,6 +69,20 @@ zsh scripts/package-release.sh
 - `scripts/smoke-live.mjs`：真实 Codex shell 工具往返验收，会消耗对应供应商额度。
 - `scripts/smoke-switch-live.mjs`：可切换窗口验收：模型 A 跑 shell 工具往返，再用模型 B 接着同一会话回答。
 
+## 兼容性
+
+| 项目 | 支持范围 |
+|---|---|
+| Mac 架构 | **通用二进制**：Apple Silicon（arm64）与 Intel（x86_64）同一份包；node 运行时两份都打包，按架构自动选 |
+| 系统版本 | **macOS 12.0 起**（Monterey）。二进制里写的部署目标是 12.0，Info.plist 同步声明 12.0 |
+| 依赖 | 自带 Node 24 运行时，用户机器无需装 node；需要系统里已有 Codex.app |
+
+说明：早期版本在 macOS 26 的机器上构建时没有指定 `-target`，二进制里被写成「最低要求 macOS 26」——
+Info.plist 写 14.0 也没用，老系统上根本加载不起来。现在 `build-app.sh` 显式指定 `-target <arch>-apple-macos12.0`，
+并逐片校验 `LC_BUILD_VERSION.minos`。
+
+详细的版本兼容性验证记录见 `docs/COMPATIBILITY.md`。
+
 详细使用、数据路径、密钥保护与分发条件见 `docs/USER-GUIDE.md`。本次发行是本机验收的签名发布候选，不将未公证或缺少供应商实测的部分宣称为公共商业分发已完成。
 
 ## 协议来源

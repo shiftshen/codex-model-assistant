@@ -11,6 +11,7 @@ struct ModelLibraryView: View {
     @State private var renameDraft = ""
 
     @State private var showModels = false
+    @State private var didSizeWindow = false
     @State private var unmanagedDeleteTarget: UnmanagedWindow?
 
     // 首页回答的是「我有哪些窗口、现在能不能进去」，而不是「我有哪些模型」。
@@ -59,12 +60,28 @@ struct ModelLibraryView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await library.openSwitch() }
         }
+        .onAppear { sizeWindowOnce() }
         .task {
             await library.refresh()
             await library.openSwitch()
             // 启动时就把磁盘占用算出来，底部的状态条才有内容。
             await library.refreshDisk()
             if library.newWindowModel.isEmpty, let first = library.switchModels.first { library.newWindowModel = first.id }
+        }
+    }
+
+    // 打开时给一个舒服的初始尺寸。用代码设而不是 .defaultSize，
+    // 是因为后者要 macOS 13+，那会把 macOS 12 的机器挡在门外。
+    private func sizeWindowOnce() {
+        guard !didSizeWindow else { return }
+        didSizeWindow = true
+        DispatchQueue.main.async {
+            guard let window = NSApp.windows.first(where: { $0.isVisible }) else { return }
+            let target = NSSize(width: 1040, height: 780)
+            if window.frame.width < target.width || window.frame.height < target.height {
+                window.setContentSize(target)
+                window.center()
+            }
         }
     }
 
@@ -315,7 +332,7 @@ struct ModelLibraryView: View {
                     Divider()
                 }
                 if let selected = library.selected { modelDetail(selected) }
-                else { ContentUnavailableView("还没有模型", systemImage: "square.stack.3d.up", description: Text("点「添加模型」，选择供应商模板开始配置。")) }
+                else { emptyState }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 940, height: 600)
@@ -498,6 +515,17 @@ struct ModelLibraryView: View {
         }
     }
 
+    // 不用 ContentUnavailableView：那个只有 macOS 14+ 才有，
+    // 而我们要让这台 app 在更老的系统上也能打开。自己画一个，效果一样、不挑系统。
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "square.stack.3d.up").font(.system(size: 34)).foregroundStyle(.secondary)
+            Text("还没有模型").font(.title3.weight(.semibold))
+            Text("点「添加模型」，选择供应商模板开始配置。").font(.callout).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func modelDetail(_ model: ManagedModel) -> some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .top) {
@@ -600,8 +628,10 @@ struct ModelLibraryView: View {
 struct CodexModelAssistantApp: App {
 
     var body: some Scene {
+        // 不用 .defaultSize：它是 macOS 13+，而 SceneBuilder 里又不能写 if #available。
+        // 窗口初始尺寸改在视图出现时自己设（见 ModelLibraryView.sizeWindowOnce），
+        // 这样 macOS 12 的机器也能装、也能开。
         WindowGroup { ModelLibraryView() }
-            .defaultSize(width: 1040, height: 780)
             .commands { CommandGroup(replacing: .newItem) { } }
     }
 }

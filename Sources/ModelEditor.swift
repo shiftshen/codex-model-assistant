@@ -26,7 +26,9 @@ struct ModelEditor: View {
                         Text("自定义兼容服务").tag("custom")
                         ForEach(library.templates.filter { $0.id != "custom" }) { template in Text(template.name).tag(template.id) }
                     }
-                    .onChange(of: templateID) { _, value in
+                    // 用单参数写法：双参数闭包（onChange(of:initial:_:)）要 macOS 14+，
+                    // 单参数从 macOS 11 就有，老系统上一样好使。
+                    .onChange(of: templateID) { value in
                         guard let template = library.templates.first(where: { $0.id == value }) else { return }
                         draft.name = template.name
                         draft.vendor = template.name
@@ -75,7 +77,6 @@ struct ModelEditor: View {
                 TextField("上下文 Token 数", value: $draft.contextWindow, format: .number.grouping(.never))
                 TextField("备注", text: $draft.notes)
             }
-            .formStyle(.grouped)
             .frame(minHeight: 350)
             if !error.isEmpty { Text(error).foregroundStyle(.red).font(.callout).fixedSize(horizontal: false, vertical: true) }
             HStack {
