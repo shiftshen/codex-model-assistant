@@ -1,11 +1,32 @@
-# Codex 模型助手 2.3.5
+# Codex 模型助手
 
 原生 macOS 模型管理与 Codex 多开工具。安装应用位于 `/Applications/Codex 模型助手.app`。
+
+## 当前发布版本
+
+| | |
+|---|---|
+| 版本 | **2.7.0** |
+| 安装包 | `release/Codex-Model-Assistant-2.7.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 系统要求 | macOS 12.0 起 |
+| SHA-256 | 见 `release/SHA256SUMS.txt` |
+| 签名 | Developer ID Application（Chinda Lorcharoen）；**未做 Apple 公证**，首次打开需右键 → 打开 |
+
+构建与发布：
+
+```bash
+zsh scripts/fetch-runtime.sh     # 两个架构的 Node 运行时都要（通用二进制需要）
+zsh scripts/build-app.sh         # 通用二进制 + 两份 node
+zsh scripts/install-v2.sh        # 备份旧版、安装到 /Applications、装 LaunchAgent
+zsh scripts/package-release.sh   # 出 dmg 并追加 SHA-256
+```
+
+兼容性验证记录见 `docs/COMPATIBILITY.md`。
 
 ## 功能
 
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
-- 本地模型（Ollama 上的 Ornith / Qwen）降级为**可选供应商**：未通过开发能力验收，已归档，默认不出现，可在「显示归档模型」里查看；重新评估的条件见 `docs/LOCAL-QUALIFICATION.md`。专家策略面板里的本地模型选择保留，只用来自行评估。
+- 本地模型（Ollama 上的 Ornith / Qwen）降级为**可选供应商**：未通过开发能力验收，已归档，默认不出现，可在「显示归档模型」里查看；重新评估的条件见 `docs/LOCAL-QUALIFICATION.md`。
 
 - 新增和编辑模型、修改 API Key、供应商模板、模型自动发现、搜索、归档恢复。
 - 官方 ChatGPT 登录独立入口；DeepSeek 使用官方 `https://api.deepseek.com/v1`。
