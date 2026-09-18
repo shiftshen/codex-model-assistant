@@ -62,6 +62,7 @@ struct ProductResponse: Decodable {
     var windows: [WorkWindow]?
     var orphans: [WorkWindow]?
     var unmanaged: [UnmanagedWindow]?
+    var fallbacks: [FallbackEvent]?
     var window: WorkWindow?
     var pid: Int?
     var disk: DiskUsage?
@@ -171,6 +172,16 @@ struct WorkWindow: Decodable, Identifiable, Hashable {
 }
 
 // 「专用单模型窗口」按设计不写进注册表，所以它们不在 windows 里；单独列出来才看得见、删得掉。
+// 网关动用备用模型的事件。备用条目的计费方可能和首选完全不同，
+// 所以这不是日志细节，是要摆到用户面前的账单提醒。
+struct FallbackEvent: Decodable, Identifiable, Hashable {
+    var at: String
+    var fromName: String
+    var toName: String
+    var reason: String?
+    var id: String { "\(at)|\(fromName)|\(toName)" }
+}
+
 struct UnmanagedWindow: Decodable, Identifiable, Hashable {
     let windowID: String
     let slot: String
@@ -207,6 +218,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var windows: [WorkWindow] = []
     @Published var orphans: [WorkWindow] = []
     @Published var unmanaged: [UnmanagedWindow] = []
+    @Published var fallbacks: [FallbackEvent] = []
     @Published var newWindowModel = ""
     @Published var disk: DiskUsage?
     @Published var diskPlan: DiskPlan?
@@ -304,6 +316,7 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.windows { windows = values }
         if let values = response.orphans { orphans = values }
         if let values = response.unmanaged { unmanaged = values }
+        if let values = response.fallbacks { fallbacks = values }
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
         if let value = response.diskPolicy { diskPolicy = value }

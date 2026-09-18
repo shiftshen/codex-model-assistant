@@ -165,7 +165,7 @@ export function isContextOverflow(error) {
 // 压缩：把较早的记录换成摘要，保留最近一段完整对话。
 // 保留量取窗口的 45%——留出输出空间，也让摘要本身有地方放。
 // 返回值里的 note 会拼进用户可见的说明，让用户知道发生了什么，而不是悄悄改了他的历史。
-export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false }) {
+export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false, sessionId = "" }) {
   const items = payload?.input;
   if (!Array.isArray(items) || items.length < 6) return null;
   const keepBudgetBytes = Math.max(64 * 1024, Math.floor(limit * keepRatio) * 3.2);
@@ -192,7 +192,7 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
       suffix = "messages";
       summaryBody = toAnthropic(toChat(request).body);
     }
-    const result = await upstream(summarizer, key, suffix, summaryBody, 120000, signal);
+    const result = await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
     const body = await limitedJSON(result.body, responseLimitBytes);
     if (summarizer.protocol === "chat") summary = String(body?.choices?.[0]?.message?.content ?? "").trim();
     else if (summarizer.protocol === "anthropic") summary = extractSummary({ output: (body?.content ?? []).map((part) => ({ type: "message", content: [part] })) });
@@ -220,13 +220,54 @@ export async function pickSummarizer(store, route, neededTokens) {
   return candidates[0] ?? route;
 }
 
-export async function upstream(route, key, suffix, body, timeout = 3600000, signal) {
+// opencode 的 Go 接口要求每个请求带 x-opencode-session，缺了会直接 400
+// （MissingSessionID）。后果不只是这次失败：网关会把它当成一次普通故障，
+// 静默 fallback 到备用模型，而备用那条多半是按量计费的——用户以为在用订阅，
+// 钱却扣在另一个账号上。所以这个头是必须的。
+const opencodeSessions = new Map();
+export function opencodeSessionFor(route, preferred = "") {
+  const wanted = String(preferred ?? "").trim();
+  if (wanted) return wanted;
+  const key = `${new URL(route.endpoint).origin}`;
+  if (!opencodeSessions.has(key)) opencodeSessions.set(key, randomUUID());
+  return opencodeSessions.get(key);
+}
+
+function isOpencodeEndpoint(endpoint) {
+  try { return new URL(endpoint).hostname.endsWith("opencode.ai"); } catch { return false; }
+}
+
+// 静默 fallback 会悄悄花用户的钱：从订阅制切到按量计费，界面上完全看不出来。
+// 今天就发生过一次——opencode 因为缺一个请求头全部失败，几百次请求全部落到
+// DeepSeek 官方按量扣费，用户只看到「官网的量一直在涨」，却不知道是谁在花。
+// 所以每一次 fallback 都必须留痕：标准输出 + 一个供界面读取的事件文件。
+export async function noteFallback(root, from, to, reason) {
+  const entry = {
+    at: new Date().toISOString(),
+    from: from.id, fromName: from.name,
+    to: to.id, toName: to.name,
+    reason: String(reason ?? "").replace(/\s+/g, " ").slice(0, 200),
+  };
+  process.stdout.write(`[fallback] 「${entry.fromName}」失败 → 已改用「${entry.toName}」（会按它自己的计费扣）：${entry.reason}\n`);
+  try {
+    const file = path.join(root, "fallback-events.json");
+    let list = [];
+    try { list = JSON.parse(await fs.readFile(file, "utf8")); } catch { }
+    if (!Array.isArray(list)) list = [];
+    list.push(entry);
+    await fs.writeFile(file, JSON.stringify(list.slice(-50), null, 2), { mode: 0o600 });
+  } catch { }
+  return entry;
+}
+
+export async function upstream(route, key, suffix, body, timeout = 3600000, signal, sessionId = "") {
   if (!route.noKey && !key) throw new Error("请先配置 API Key");
   const headers = { "content-type": "application/json" };
   if (route.protocol === "anthropic") {
     headers["x-api-key"] = key;
     headers["anthropic-version"] = "2023-06-01";
   } else if (key) headers.authorization = `Bearer ${key}`;
+  if (isOpencodeEndpoint(route.endpoint)) headers["x-opencode-session"] = opencodeSessionFor(route, sessionId);
   const response = await fetch(`${route.endpoint}/${suffix}`, {
     method: body ? "POST" : "GET", headers, body: body ? JSON.stringify(body) : undefined,
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout), redirect: "error",
@@ -465,6 +506,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
       let served = false;
       let lastError = null;
       let eventsSent = false;
+      let candidateIndex = 0;
       for (const candidate of candidates) {
         const target = candidate.route;
         const targetKey = candidate.key ?? (await store.secret(target.credentialID));
@@ -482,7 +524,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
               await pipeline(Readable.fromWeb(result.body), response);
               disarmIdle();
             } else if (attempt === "responses") {
-              const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...payload, model: target.model }, target.model), 3600000, callSignal);
+              const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...payload, model: target.model }, target.model), 3600000, callSignal, payload.session_id);
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               // 这里必须直接转发，不能因为「已经发过响应头」就把整段缓冲下来：
               // 提前发出去的只是「正在压缩」的注释，正文仍然要一个 token 一个 token 地流。
@@ -500,7 +542,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
               }
               const { body, definitions } = toChat({ ...payload, model: target.model }, { stream: Boolean(payload.stream) });
               const path = attempt === "anthropic" ? "messages" : "chat/completions";
-              const result = await upstream({ ...target, protocol: attempt }, targetKey, path, attempt === "anthropic" ? toAnthropic(body, { stream: Boolean(payload.stream) }) : body, 3600000, callSignal);
+              const result = await upstream({ ...target, protocol: attempt }, targetKey, path, attempt === "anthropic" ? toAnthropic(body, { stream: Boolean(payload.stream) }) : body, 3600000, callSignal, payload.session_id);
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
               armIdle();
               if (!payload.stream) sendJSON(response, 200, fromCompletion(await limitedJSON(result.body), definitions, attempt, target.model));
@@ -527,6 +569,8 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 response.end();
               }
             }
+            // 不是首选条目 = 用了备用。这两条的计费方通常不是一个账户，必须让用户看得见。
+            if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")));
             served = true;
             break;
           } catch (error) {
@@ -568,6 +612,7 @@ export function createGateway(store = new ModelStore(), options = {}) {
         if (served) {
           break;
         }
+        candidateIndex += 1;
       }
       if (!served) throw lastError || new Error("模型调用失败");
     } catch (error) {

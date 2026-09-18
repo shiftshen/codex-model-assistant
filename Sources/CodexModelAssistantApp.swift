@@ -113,12 +113,32 @@ struct ModelLibraryView: View {
                     ForEach(library.windows) { window in windowCard(window) }
                     newWindowCard
                 }
+                if let latest = library.fallbacks.first { fallbackBanner(latest) }
                 if !library.orphans.isEmpty { orphanRow }
                 if !library.unmanaged.isEmpty { unmanagedSection }
             }
             .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    // 静默 fallback 花钱这件事必须显眼：用户选了订阅制的模型，
+    // 结果请求失败后网关改用按量计费的备用条目，账单上却看不出来。
+    private func fallbackBanner(_ event: FallbackEvent) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("有请求被自动改用备用模型：\(event.fromName) → \(event.toName)")
+                    .font(.caption.weight(.semibold))
+                Text("备用条目按它自己的账户计费，可能和你以为的在用的套餐不是同一个。最近一次：\(event.at)　原因：\(event.reason ?? "未记录")")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("要么修好首选条目，要么在模型库里把它的「失败时改用」清空。")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func windowCard(_ window: WorkWindow) -> some View {

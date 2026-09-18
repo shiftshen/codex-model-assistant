@@ -153,6 +153,17 @@ export async function readWindowCurrentModel(homePath) {
 // 目录大小的短时缓存：见 unmanagedWindows()，避免每次刷新界面都跑一遍 du。
 const unmanagedSizeCache = { at: 0, map: new Map() };
 
+// 网关每次动用备用条目都会写一条，这里读出来给界面用。
+export async function readFallbackEvents(root, limit = 5) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(root, "fallback-events.json"), "utf8"));
+    if (!Array.isArray(list)) return [];
+    return list.slice(-limit).reverse();
+  } catch {
+    return [];
+  }
+}
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -627,6 +638,9 @@ export class ProductService {
       });
     }
     return {
+      // 最近发生过的「静默改用备用模型」。备用条目的计费方可能完全不同，
+      // 界面必须能把它摆到用户面前，而不是只躺在日志里。
+      fallbacks: await readFallbackEvents(this.store.root),
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
       unmanaged: await this.unmanagedWindows(),
       windows: await Promise.all(registry.windows.map(async (entry) => ({
