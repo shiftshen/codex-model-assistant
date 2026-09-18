@@ -91,20 +91,13 @@ jobs:
           if-no-files-found: error
       - name: Publish preview release assets
         if: startsWith(github.ref, 'refs/tags/')
-        shell: powershell
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          name: Codex Model Assistant ${{ github.ref_name }}
+          body: Windows Preview automated x64 build. Core Node tests passed on windows-latest; real Microsoft Store/MSIX desktop behavior still requires user-machine validation.
+          files: |
+            release-windows/*.exe
+            release-windows/SHA256SUMS-windows.txt
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --prerelease --title "Codex Model Assistant ${{ github.ref_name }}" --notes "Windows Preview: automated Windows x64 build. Core Node tests passed on windows-latest; real Microsoft Store/MSIX desktop behavior still requires user-machine validation."
-          }
-          $assets = @(
-            Get-ChildItem release-windows -Filter "*.exe" | Sort-Object Name | ForEach-Object { $_.FullName }
-          )
-          $assets += (Resolve-Path "release-windows/SHA256SUMS-windows.txt").Path
-          foreach ($asset in $assets) {
-            Write-Host "Uploading $asset"
-            gh release upload "${{ github.ref_name }}" "$asset" --clobber --repo "${{ github.repository }}"
-            if ($LASTEXITCODE -ne 0) { throw "Failed to upload $asset" }
-          }
+          GITHUB_TOKEN: ${{ github.token }}
