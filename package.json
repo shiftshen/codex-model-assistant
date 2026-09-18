@@ -35,6 +35,7 @@
       "output": "release-windows"
     },
     "win": {
+      "signExecutable": false,
       "target": [
         {
           "target": "nsis",
