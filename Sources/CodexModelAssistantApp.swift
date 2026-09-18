@@ -35,11 +35,64 @@ struct ModelLibraryView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("运行诊断").font(.title2.bold())
                 Text(library.diagnostics).font(.body).textSelection(.enabled).lineSpacing(8)
-                HStack { Spacer(); Button("完成") { library.showDiagnostics = false }.keyboardShortcut(.defaultAction) }
+                HStack {
+                    Button("修复工作窗口") { Task { await library.callRepairAndRefreshDiagnostics() } }.disabled(library.busy)
+                    Spacer()
+                    Button("完成") { library.showDiagnostics = false }.keyboardShortcut(.defaultAction)
+                }
             }.padding(28).frame(width: 600)
         }
         .sheet(isPresented: $library.showExpert) { ExpertSettingsView(library: library) }
+        .sheet(isPresented: $library.showSwitch) { switchWindow }
         .task { await library.refresh() }
+    }
+
+    private var switchWindow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.2.circlepath").font(.title2).foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("可切换窗口").font(.title2.bold())
+                    Text("一个窗口装下全部第三方模型：在 Codex 里直接换模型，对话和任务库都留在原地。").font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if library.routerRunning {
+                    Text("已启动").font(.caption.weight(.semibold)).foregroundStyle(.green)
+                        .padding(.horizontal, 8).padding(.vertical, 4).background(Color.green.opacity(0.12), in: Capsule())
+                }
+            }
+            Text("可选 \(library.switchModels.count) 个模型（官方 ChatGPT 登录和已归档模型不在这里）。打开后，Codex 顶部的模型选择就是全部选项。")
+                .font(.caption).foregroundStyle(.secondary)
+            List(library.switchModels) { entry in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.name).font(.system(size: 13, weight: .semibold))
+                        Text("\(entry.model) · \(entry.vendor)").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Button("用这个打开") { Task { await library.launchSwitchWindow(initial: entry.id) } }
+                        .disabled(library.busy)
+                }
+            }
+            .frame(minHeight: 220)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("把已有会话带进来").font(.callout.weight(.semibold))
+                Text("第一次使用前先打开一次切换窗口，让 Codex 建好任务库并退出，然后在这里导入。导入只新增副本，不会改动官方或其它模型窗口的会话。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Button("导入官方会话") { Task { await library.importHistory("shared") } }.disabled(library.busy)
+                    Button("导入全部（官方 + 各模型窗口）") { Task { await library.importHistory("all") } }.disabled(library.busy)
+                    Button("修复工作窗口") { Task { await library.perform("repair-work-window") } }.disabled(library.busy)
+                }
+            }
+            if library.busy { ProgressView().controlSize(.small) }
+            HStack {
+                Text(library.message).font(.caption).foregroundStyle(library.success == false ? .red : .secondary).lineLimit(3)
+                Spacer()
+                Button("关闭") { library.showSwitch = false }.keyboardShortcut(.cancelAction)
+                Button("打开工作窗口") { Task { await library.openWorkWindow() } }.buttonStyle(.borderedProminent).disabled(library.busy || library.workWindowID == nil)
+            }
+        }.padding(24).frame(width: 640, height: 620)
     }
 
     private var sidebar: some View {
@@ -48,7 +101,7 @@ struct ModelLibraryView: View {
                 Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Codex 模型助手").font(.headline)
-                    Text("LOCAL FIRST · 2.1").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text("LOCAL FIRST · 2.2").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                 }
             }.padding(.top, 8)
             TextField("搜索模型或供应商", text: $library.search).textFieldStyle(.roundedBorder)
@@ -95,13 +148,20 @@ struct ModelLibraryView: View {
                 Text(library.localStatus?.message ?? "正在读取本地运行状态…").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
             Button { Task { await library.launchPreferredLocal() } } label: { Label("启动本地主力", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }
-                .buttonStyle(.bordered).disabled(library.busy)
+                .buttonStyle(.bordered).disabled(library.busy || !library.canLaunchPreferredLocal)
+            Button { Task { await library.openSwitch() } } label: { Label("可切换窗口", systemImage: "arrow.triangle.2.circlepath").frame(maxWidth: .infinity) }
+                .buttonStyle(.bordered).disabled(library.busy || library.switchModels.isEmpty)
+                .help("一个窗口使用全部模型（含官方）；在 Codex 里换模型不会丢对话")
+            Button { Task { await library.openWorkWindow() } } label: { Label("打开工作窗口", systemImage: "macwindow.badge.plus").frame(maxWidth: .infinity) }
+                .buttonStyle(.borderedProminent).disabled(library.busy || library.workWindowID == nil)
+                .help("打开统一工作窗口：\(library.workWindowName)，对话和任务库都在这里")
             Button { Task { await library.openExpert() } } label: { Label("本地优先 / 专家策略", systemImage: "person.crop.circle.badge.checkmark").frame(maxWidth: .infinity) }
                 .disabled(library.busy)
             Button { editing = ManagedModel.new() } label: { Label("添加模型", systemImage: "plus").frame(maxWidth: .infinity) }
                 .buttonStyle(.borderedProminent).controlSize(.large).disabled(library.busy)
             Toggle("显示归档模型", isOn: $library.showArchived).toggleStyle(.checkbox).font(.caption)
-            Text("\(library.readyCount) 个配置就绪 · 多开独立，同一本地模型串行").font(.caption).foregroundStyle(.secondary)
+            Toggle("显示隐藏条目", isOn: $library.showHidden).toggleStyle(.checkbox).font(.caption)
+            Text("\(library.readyCount) 个配置就绪 · 同一本地服务请求排队执行").font(.caption).foregroundStyle(.secondary)
         }
         .padding(16).frame(width: 270).background(Color(nsColor: .controlBackgroundColor))
     }
@@ -126,10 +186,17 @@ struct ModelLibraryView: View {
                 row("接口格式", model.protocol == "oauth" ? "官方登录" : model.protocol)
                 Divider()
                 row("密钥状态", model.protocol == "oauth" ? "使用 Codex 登录信息" : (model.noKey ? "无需密钥" : (model.hasKey == true ? "已保存 · 不展示原文" : "未配置 API Key")))
+                Divider()
+                row("可切换窗口", model.protocol == "oauth" ? "官方入口自带模型选择" : (model.archived ? "已归档，不收录" : (library.switchModels.contains { $0.id == model.id } ? "已收录 · 同一窗口直接换" : "未收录")))
+                Divider()
+                row("本窗口模型", model.protocol == "oauth" ? "官方模型选择" : (model.switchable == true ? "可切换全部模型" : "仅此模型"))
+                Divider()
+                row("失败时改用", model.protocol == "oauth" ? "不适用" : (model.fallback.flatMap { id in library.models.first { $0.id == id }?.name } ?? "未设置"))
             }.padding(.horizontal, 16).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 10) {
                 Button("编辑配置 / Key") { editing = model }
                 Button("发现模型") { Task { await library.perform("discover") } }.disabled(!model.noKey && model.hasKey != true && model.protocol != "oauth")
+                Button("自动识别接口") { Task { await library.perform("autodetect") } }.disabled(!model.ready || model.archived || model.protocol == "oauth").help("逐个真跑一次最小请求，自动判断该供应商用的是 Responses、Chat 还是 Messages，并保存结果")
                 if !model.docs.isEmpty, let url = URL(string: model.docs) { Link("官方文档 ↗", destination: url).font(.callout) }
                 Spacer()
             }.disabled(library.busy)
@@ -151,7 +218,7 @@ struct ModelLibraryView: View {
                         Text(library.isRunning(model) ? "Codex 已启动" : "Codex 未启动").foregroundStyle(library.isRunning(model) ? .green : .secondary)
                     }.font(.callout.weight(.semibold))
                     Text(library.isLoaded(model) ? "Ollama 当前已加载此模型，占用显存。" : "Ollama 当前未常驻加载此模型；只有收到请求时才会载入。").font(.caption).foregroundStyle(.secondary)
-                    Text(model.id == library.preferredLocalID ? "建议让主力处理日常开发；同一本地模型两个对话会串行，长任务压缩时第二个会被拒绝。" : "备用模型适合单独开另一个任务对照；同一张 5090 同时跑 Ornith 和 Qwen 会抢显存与速度。").font(.caption).foregroundStyle(.secondary)
+                    Text("同一本地服务的请求排队执行；等待期间保持连接。配置就绪不代表已通过开发能力验收。").font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
@@ -159,14 +226,25 @@ struct ModelLibraryView: View {
             Spacer(minLength: 0)
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "macwindow.on.rectangle").foregroundStyle(.secondary)
-                Text(["s5090-ornith", "s5090-qwen"].contains(model.id) ? "本地主力执行，按需调用付费专家。同一本地模型一次只跑一个推理请求；长上下文压缩期间请勿再开同模型重任务。" : "独立窗口与任务库。多个模型可以同时工作；更改配置后需重新启动对应模型窗口。").font(.caption).foregroundStyle(.secondary)
+                Text(["s5090-ornith", "s5090-qwen"].contains(model.id) ? "本地服务按请求排队。付费专家调用由策略控制；已归档模型不能启动。" : "只想换模型、继续同一个对话：用「在可切换窗口中打开」，之后在 Codex 顶部的模型选择里直接换，窗口和对话不变。想给某个模型单独一个专用窗口：用「启动 Codex」，旧任务可用「导入原会话并继续」复制一份；副本与原件不会自动同步，任务内容都会发送给所选供应商。").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if model.id != "official" { Button(model.archived ? "恢复模型" : "归档") { Task { await library.archive() } } }
                 Spacer()
                 Button("检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
                 Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived || model.protocol == "oauth").help("发送短测试请求，消耗少量供应商额度")
-                Button("启动 Codex") { Task { await library.perform("launch") } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
+                Button("打开工作窗口") { Task { await library.openWorkWindow(initial: model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
+                    .help("打开统一工作窗口，用这个模型作为起始模型；窗口里的全部模型都能在 Codex 顶部直接换")
+                Menu {
+                    Button("独立窗口（单模型）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
+                    if model.protocol != "oauth" {
+                        Button("导入官方会话并继续") { Task { await library.perform("continue") } }.disabled(!model.ready || model.archived)
+                    }
+                    if model.switchable == true {
+                        Button("本窗口改为单模型") { Task { await library.perform("disable-switching") } }
+                    }
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).frame(width: 28)
             }.disabled(library.busy)
         }.padding(28)
     }

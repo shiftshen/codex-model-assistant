@@ -13,6 +13,9 @@ struct ManagedModel: Codable, Identifiable, Hashable {
     var credentialID: String
     var noKey: Bool
     var archived: Bool
+    var switchable: Bool?
+    var fallback: String?
+    var hidden: Bool?
     var contextWindow: Int
     var hasKey: Bool?
     var verifiedAt: String?
@@ -35,6 +38,15 @@ struct ProviderTemplate: Decodable, Identifiable {
     let noKey: Bool?
 }
 
+struct SwitchableModel: Decodable, Identifiable, Hashable {
+    let id: String
+    let slug: String
+    let name: String
+    let model: String
+    let vendor: String
+    let `protocol`: String
+}
+
 struct ProductResponse: Decodable {
     var ok: Bool
     var message: String?
@@ -47,6 +59,8 @@ struct ProductResponse: Decodable {
     var expertUsage: ExpertUsage?
     var localStatus: LocalRuntimeStatus?
     var answer: String?
+    var switchModels: [SwitchableModel]?
+    var routerRunning: Bool?
 }
 
 struct LocalRuntimeStatus: Decodable {
@@ -64,6 +78,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var selectedID = "s5090-ornith"
     @Published var search = ""
     @Published var showArchived = false
+    @Published var showHidden = false
     @Published var busy = false
     @Published var message = "正在读取模型库…"
     @Published var success: Bool?
@@ -76,20 +91,29 @@ final class LibraryViewModel: ObservableObject {
     @Published var expertUsage: ExpertUsage?
     @Published var localStatus: LocalRuntimeStatus?
     @Published var showExpert = false
+    @Published var switchModels: [SwitchableModel] = []
+    @Published var routerRunning = false
+    @Published var showSwitch = false
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
-        let priority = [expertPolicy?.preferredLocal ?? "s5090-ornith", "s5090-ornith", "s5090-qwen", "official"]
-        return models.filter { $0.archived == showArchived && (search.isEmpty || "\($0.name) \($0.vendor) \($0.model)".localizedCaseInsensitiveContains(search)) }.sorted {
+        let priority = ["official", "deepseek-flash", expertPolicy?.preferredLocal ?? "s5090-ornith", "s5090-ornith", "s5090-qwen"]
+        return models.filter { $0.archived == showArchived && (showHidden || $0.hidden != true) && (search.isEmpty || "\($0.name) \($0.vendor) \($0.model)".localizedCaseInsensitiveContains(search)) }.sorted {
             let first = priority.firstIndex(of: $0.id) ?? 100
             let second = priority.firstIndex(of: $1.id) ?? 100
             return first == second ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : first < second
         }
     }
     var readyCount: Int { models.filter { $0.ready && !$0.archived }.count }
-    var preferredLocalID: String { localStatus?.preferredLocal ?? expertPolicy?.preferredLocal ?? "s5090-ornith" }
-    var preferredLocalName: String { models.first { $0.id == preferredLocalID }?.name ?? (preferredLocalID == "s5090-qwen" ? "Qwen3.8 27B · 5090" : "Ornith 1.5 35B · 5090") }
+    var preferredLocalID: String { expertPolicy?.preferredLocal ?? localStatus?.preferredLocal ?? "s5090-ornith" }
+    var canLaunchPreferredLocal: Bool { models.contains { $0.id == preferredLocalID && $0.ready && !$0.archived } }
+    var preferredLocalName: String { canLaunchPreferredLocal ? (models.first { $0.id == preferredLocalID }?.name ?? "未配置") : "已停用" }
     func isLocal(_ model: ManagedModel) -> Bool { ["s5090-ornith", "s5090-qwen"].contains(model.id) }
+    var workWindowID: String? {
+        models.first { $0.switchable == true && !$0.archived }?.id
+            ?? models.first { $0.archived == false && $0.ready && $0.protocol != "oauth" && !["s5090-ornith", "s5090-qwen"].contains($0.id) }?.id
+    }
+    var workWindowName: String { models.first { $0.id == workWindowID }?.name ?? "未设置" }
     func isRunning(_ model: ManagedModel) -> Bool { localStatus?.runningInstances.contains(model.id) == true }
     func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
 
@@ -124,6 +148,8 @@ final class LibraryViewModel: ObservableObject {
         if let policy = response.expertPolicy { expertPolicy = policy }
         if let usage = response.expertUsage { expertUsage = usage }
         if let status = response.localStatus { localStatus = status }
+        if let values = response.switchModels { switchModels = values }
+        if let value = response.routerRunning { routerRunning = value }
         success = response.ok
     }
 
@@ -133,6 +159,7 @@ final class LibraryViewModel: ObservableObject {
         let response = await call(["library"])
         accept(response)
         if selectedID == "s5090-ornith", let policy = response.expertPolicy { selectedID = policy.preferredLocal }
+        if selected?.archived == true && !showArchived { selectedID = "official" }
         if response.ok { message = gateway.ok ? "模型库已就绪。选择模型，配置密钥并验证后启动。" : (gateway.message ?? "模型网关未启动"); success = gateway.ok ? nil : false }
         busy = false
     }
@@ -151,7 +178,64 @@ final class LibraryViewModel: ObservableObject {
         busy = false
     }
 
+    func openSwitch() async {
+        busy = true
+        let response = await call(["switch-status"])
+        accept(response)
+        showSwitch = response.ok
+        busy = false
+    }
+
+    func launchSwitchWindow(initial: String = "") async {
+        busy = true
+        success = nil
+        message = "正在准备可切换窗口（第一次启动需要几秒）…"
+        let response = await call(["switch-window", initial])
+        accept(response)
+        if response.ok { showSwitch = false }
+        busy = false
+    }
+
+    // 统一入口：打开那个"什么模型都能换"的工作窗口（对话就在同一个任务库里）。
+    func openWorkWindow(initial: String = "") async {
+        busy = true
+        success = nil
+        message = "正在打开工作窗口…"
+        let targetID = initial.isEmpty ? (workWindowID ?? "") : initial
+        guard !targetID.isEmpty, let target = models.first(where: { $0.id == targetID }) else {
+            message = "还没有可用作工作窗口的模型，请先配置一个并填写 Key"
+            success = false
+            busy = false
+            return
+        }
+        accept(await call(["switch-window", target.id]))
+        busy = false
+    }
+
+    func toggleHidden() async {
+        showHidden.toggle()
+    }
+
+    func importHistory(_ target: String) async {
+        busy = true
+        success = nil
+        message = target == "shared" ? "正在从官方任务库导入会话，较大时需等待…" : "正在导入已有会话，较大的任务库需要一些时间…"
+        accept(await call(["import-history", target]))
+        busy = false
+    }
+
+    func callRepairAndRefreshDiagnostics() async {
+        busy = true
+        success = nil
+        message = "正在修复工作窗口分组…"
+        accept(await call(["repair-work-window"]))
+        let diagnosis = await call(["diagnostics"])
+        if diagnosis.ok { diagnostics = diagnosis.message ?? "" }
+        busy = false
+    }
+
     func launchPreferredLocal() async {
+        guard canLaunchPreferredLocal else { message = "本地主力已停用，请选择其他可用模型"; success = false; return }
         selectedID = preferredLocalID
         await perform("launch")
     }
@@ -160,7 +244,7 @@ final class LibraryViewModel: ObservableObject {
         let id = selectedID
         busy = true
         success = nil
-        message = operation == "probe" ? "正在执行真实推理验证，最长 90 秒…" : "正在处理…"
+        message = operation == "continue" ? "正在复制原会话和索引，保留官方原件；较大任务库需要一些时间…" : operation == "probe" ? "正在执行真实推理验证，最长 90 秒…" : "正在处理…"
         let response = await call([operation, id])
         accept(response)
         if operation == "discover", response.ok {

@@ -18,19 +18,45 @@ export async function atomicJSON(file, value) {
   }
 }
 
+// 用户常常直接粘贴控制台地址（例如 http://127.0.0.1:8080/#accounts）或省略 /v1，这里统一成可用的服务根地址。
+export function normalizeEndpoint(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return raw;
+  let text = raw.split("#")[0].split("?")[0].trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
+    const local = /^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?(\/|$)/.test(text);
+    text = `${local ? "http" : "https"}://${text.replace(/^\/+/, "")}`;
+  }
+  try {
+    const url = new URL(text);
+    url.search = "";
+    url.hash = "";
+    const path = url.pathname.replace(/\/+$/, "");
+    url.pathname = path === "" ? "/v1" : path;
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return raw;
+  }
+}
+
 export function validateRoute(input) {
   if (!validID(input.id)) throw new Error("模型标识无效");
   const route = {};
-  for (const key of ["id", "name", "vendor", "endpoint", "protocol", "model", "notes", "docs", "credentialID"]) {
+  for (const key of ["id", "name", "vendor", "endpoint", "protocol", "model", "notes", "docs", "credentialID", "fallback"]) {
     route[key] = String(input[key] ?? "").trim();
     if (route[key].length > (key === "notes" ? 2000 : 500) || /[\u0000-\u001f]/.test(route[key])) throw new Error("字段过长或包含控制字符");
   }
   if (!route.name) throw new Error("请输入模型名称");
-  if (!["oauth", "responses", "chat", "anthropic"].includes(route.protocol)) throw new Error("不支持此接口协议");
+  if (!["oauth", "responses", "chat", "anthropic", "chatgpt"].includes(route.protocol)) throw new Error("不支持此接口协议");
   if (route.protocol === "oauth" && route.id !== "official") throw new Error("ChatGPT 登录仅用于官方入口");
   if (route.id === "official" && route.protocol !== "oauth") throw new Error("官方入口不能更换协议");
   if (route.protocol === "oauth" && !["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"].includes(route.model)) throw new Error("ChatGPT 登录入口仅允许官方模型；第三方模型请使用供应商模板");
-  if (route.protocol !== "oauth") {
+  if (route.protocol === "chatgpt") {
+    // 官方模型走 Codex 自己的 ChatGPT 登录，不需要地址和密钥。
+    route.endpoint = "https://chatgpt.com/backend-api/codex";
+    route.noKey = true;
+    route.credentialID = route.id;
+  } else if (route.protocol !== "oauth") {
     let url;
     try { url = new URL(route.endpoint); } catch { throw new Error("请输入有效的服务地址"); }
     const local = /^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(url.hostname);
@@ -42,7 +68,15 @@ export function validateRoute(input) {
   route.credentialID ||= route.id;
   if (!validID(route.credentialID)) throw new Error("密钥标识无效");
   route.noKey = Boolean(input.noKey);
+  if (route.protocol === "chatgpt") route.noKey = true;
+  // 隐藏条目不在模型库列表里显示，但仍会出现在可切换窗口的选择器中。
+  route.hidden = route.protocol === "oauth" ? false : Boolean(input.hidden);
   route.archived = route.id === "official" ? false : Boolean(input.archived);
+  // 官方登录入口自带模型选择；第三方条目可以选择"这个窗口也能切模型"。
+  route.switchable = route.protocol === "oauth" ? false : Boolean(input.switchable);
+  // 主模型失败（额度、限流、服务异常）时改用的备用条目，可为空。
+  route.fallback = route.protocol === "oauth" ? "" : String(route.fallback || "").trim();
+  if (route.fallback && (!validID(route.fallback) || route.fallback === route.id)) throw new Error("备用模型填写不正确");
   route.contextWindow = Number(input.contextWindow ?? 128000);
   if (!Number.isInteger(route.contextWindow) || route.contextWindow < 4096 || route.contextWindow > 2000000) throw new Error("上下文长度应为 4096–2000000");
   return route;
@@ -135,7 +169,7 @@ export class ModelStore {
     } finally { await lock.close(); await fs.unlink(lockPath); }
   }
   async save(input, revision, secret, clearKey = false) {
-    const route = validateRoute(input);
+    const route = validateRoute({ ...input, endpoint: normalizeEndpoint(input.endpoint) });
     return this.mutate(revision, async (data) => {
       const prior = data.routes.find((entry) => entry.id === route.id);
       const sharedElsewhere = data.routes.some((entry) => entry.id !== route.id && entry.credentialID === route.credentialID && entry.endpoint !== route.endpoint);

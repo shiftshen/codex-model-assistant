@@ -49,11 +49,20 @@ struct ModelEditor: View {
                 }
                 if draft.protocol != "oauth" {
                     TextField("API 地址", text: $draft.endpoint)
+                    Text("可以直接粘贴控制台地址（例如 http://127.0.0.1:8080/#accounts）或只写到主机名，保存时会自动补成可用的服务地址。").font(.caption).foregroundStyle(.secondary)
                     Picker("接口格式", selection: $draft.protocol) {
                         Text("Responses API").tag("responses")
                         Text("Chat Completions").tag("chat")
                         Text("Anthropic Messages").tag("anthropic")
                     }
+                    Text("不确定选哪个就保持默认，保存后点「自动识别接口」：助手会逐个真跑一次最小请求，把能用的那套记下来。").font(.caption).foregroundStyle(.secondary)
+                    Picker("主模型失败时改用", selection: $draft.fallback) {
+                        Text("不设置").tag(Optional<String>.none)
+                        ForEach(library.models.filter { $0.id != draft.id && $0.protocol != "oauth" && !$0.archived }) { candidate in
+                            Text("\(candidate.name)（\(candidate.model.isEmpty ? candidate.id : candidate.model)）").tag(Optional(candidate.id))
+                        }
+                    }
+                    Text("额度用尽、限流或服务异常时自动改用这个模型，任务不用重来；正常时不调用它。改用的模型在回复里不会额外提示。").font(.caption).foregroundStyle(.secondary)
                     Toggle("无需 API Key（本地服务）", isOn: $draft.noKey)
                     if !draft.noKey {
                         SecureField(draft.hasKey == true ? "新 API Key（留空保留）" : "API Key", text: $key).textContentType(.password)

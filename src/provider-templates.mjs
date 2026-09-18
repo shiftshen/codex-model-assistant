@@ -1,5 +1,5 @@
 export const templates = [
-  { id: "deepseek", name: "DeepSeek 官方", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "deepseek-v4-flash", docs: "https://api-docs.deepseek.com/guides/responses_api/" },
+  { id: "deepseek", name: "DeepSeek V4.1 Flash · 官方", endpoint: "https://api.deepseek.com/v1", protocol: "responses", model: "deepseek-flash", contextWindow: 1000000, docs: "https://api-docs.deepseek.com/quick_start/pricing/" },
   { id: "openai-api", name: "OpenAI API", endpoint: "https://api.openai.com/v1", protocol: "responses", model: "", docs: "https://platform.openai.com/docs/api-reference/responses" },
   { id: "anthropic", name: "Anthropic Claude", endpoint: "https://api.anthropic.com/v1", protocol: "anthropic", model: "", docs: "https://platform.claude.com/docs/en/api/overview" },
   { id: "gemini", name: "Google Gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai", protocol: "chat", model: "gemini-2.5-flash", docs: "https://ai.google.dev/gemini-api/docs/openai" },

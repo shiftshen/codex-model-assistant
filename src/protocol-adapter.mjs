@@ -15,7 +15,7 @@ function textContent(content) {
   return content.map((part) => part.text || "").join("\n");
 }
 
-export function toChat(payload) {
+export function toChat(payload, { stream = false } = {}) {
   const definitions = toolDefinitions(payload.tools);
   const messages = [];
   if (payload.instructions) messages.push({ role: "system", content: payload.instructions });
@@ -44,14 +44,15 @@ export function toChat(payload) {
     if (message.tool_calls && previous?.tool_calls) previous.tool_calls.push(...message.tool_calls);
     else merged.push(message);
   }
-  const body = { model: payload.model, messages: merged, stream: false };
+  const body = { model: payload.model, messages: merged, stream };
+  if (stream) body.stream_options = { include_usage: true };
   if (definitions.length) body.tools = definitions.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } }));
   if (payload.max_output_tokens) body.max_tokens = payload.max_output_tokens;
   if (payload.tool_choice === "none" || payload.tool_choice === "auto" || payload.tool_choice === "required") body.tool_choice = payload.tool_choice;
   return { body, definitions };
 }
 
-export function toAnthropic(chat) {
+export function toAnthropic(chat, { stream = false } = {}) {
   const system = chat.messages.filter((message) => message.role === "system").map((message) => textContent(message.content)).join("\n\n");
   const messages = [];
   for (const message of chat.messages.filter((entry) => entry.role !== "system")) {
@@ -67,7 +68,7 @@ export function toAnthropic(chat) {
     if (messages.at(-1)?.role === role) messages.at(-1).content.push(...content);
     else messages.push({ role, content });
   }
-  const body = { model: chat.model, max_tokens: chat.max_tokens || 8192, messages };
+  const body = { model: chat.model, max_tokens: chat.max_tokens || 8192, messages, stream };
   if (system) body.system = system;
   if (chat.tools?.length) body.tools = chat.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters }));
   if (chat.tool_choice) body.tool_choice = { type: chat.tool_choice === "required" ? "any" : chat.tool_choice };
@@ -126,6 +127,92 @@ export function responseEvents(response) {
   });
   events.push({ type: `response.${response.status}`, response });
   return events.map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join("");
+}
+
+// 流式转发：正文边收边发（Codex 只认 response.output_text.delta），
+// 结束前再补上完整条目和 response.completed，函数调用参数按完整值一次性给出。
+export function createResponseStream({ model, send }) {
+  const responseID = `resp_${randomUUID()}`;
+  const base = { id: responseID, object: "response", created_at: Math.floor(Date.now() / 1000), model };
+  const message = { id: `msg_${randomUUID()}`, type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "", annotations: [] }] };
+  const calls = new Map();
+  const order = [];
+  let sequence = 1;
+  let started = false;
+  let textBuffer = "";
+  let usage = { input_tokens: 0, output_tokens: 0 };
+  const emit = (type, payload) => send(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...payload })}\n\n`);
+
+  function startMessage() {
+    if (started) return;
+    started = true;
+    emit("response.output_item.added", { output_index: 0, item: { ...message, content: [] } });
+    emit("response.content_part.added", { item_id: message.id, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+    order.push(message);
+  }
+
+  function callAt(index) {
+    if (!calls.has(index)) {
+      const call = { id: `fc_${randomUUID()}`, call_id: `call_${randomUUID()}`, name: "", arguments: "", type: "function_call", custom: false, namespace: "" };
+      calls.set(index, call);
+      order.push(call);
+    }
+    return calls.get(index);
+  }
+
+  function mapCall(call, definitions) {
+    const definition = definitions.find((entry) => entry.name === call.name);
+    const item = { id: call.id, call_id: call.call_id, name: definition?.original || call.name, status: "completed" };
+    if (definition?.namespace) item.namespace = definition.namespace;
+    if (definition?.custom) {
+      item.type = "custom_tool_call";
+      try { item.input = JSON.parse(call.arguments).input ?? call.arguments; }
+      catch { item.input = call.arguments; }
+    } else {
+      item.type = "function_call";
+      item.arguments = call.arguments || "{}";
+    }
+    return item;
+  }
+
+  return {
+    created() { emit("response.created", { response: { ...base, status: "in_progress", output: [] } }); },
+    textDelta(chunk) {
+      if (!chunk) return;
+      startMessage();
+      textBuffer += chunk;
+      emit("response.output_text.delta", { item_id: message.id, output_index: 0, content_index: 0, delta: chunk });
+    },
+    reasoningDelta(chunk) {
+      if (!chunk) return;
+      emit("response.reasoning_text.delta", { item_id: `rs_${responseID}`, output_index: 0, content_index: 0, delta: chunk });
+    },
+    toolDelta(index, { id, name, arguments: args }) {
+      const call = callAt(index);
+      if (id) call.call_id = id;
+      if (name) call.name += name;
+      if (args) call.arguments += args;
+    },
+    setUsage(next) { usage = { ...usage, ...(next || {}) }; },
+    finish({ definitions = [] } = {}) {
+      const output = [];
+      for (const entry of order) {
+        const item = entry === message ? { ...message, content: [{ ...message.content[0], text: textBuffer }] } : mapCall(entry, definitions);
+        if (item.type === "message" && !item.content[0].text) continue;
+        output.push(item);
+        emit("response.output_item.done", { output_index: output.length - 1, item });
+      }
+      const response = {
+        ...base,
+        status: "completed",
+        incomplete_details: null,
+        output,
+        usage: { input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0, total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0) },
+      };
+      emit("response.completed", { response });
+      return response;
+    },
+  };
 }
 
 export function nativePayload(payload, model) {

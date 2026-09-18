@@ -46,6 +46,8 @@ test("preparing legacy local route migrates only its broken protocol with a back
   service.gatewayReady = async () => {};
   const prepared = await service.prepare(route.id);
   assert.equal(prepared.route.protocol, "chat");
+  const metadata = JSON.parse(await fs.readFile(path.join(prepared.homePath, "model-catalog.json"), "utf8"));
+  assert.match(metadata.models[0].base_instructions, /Continue executing/);
   const config = await fs.readFile(path.join(prepared.homePath, "config.toml"), "utf8");
   assert.match(config, /mcp_servers.paid_expert.tools.consult_expert/);
   assert.match(config, /approval_mode = "approve"/);
@@ -58,12 +60,32 @@ test("preparing legacy local route migrates only its broken protocol with a back
 
 test("local runtime status reports preferred worker and optional live state", async (context) => {
   const store = await fixture(context);
+  const target = await listen(http.createServer((request, response) => {
+    assert.equal(request.url, "/api/ps");
+    response.end(JSON.stringify({ models: [{ name: "actual-remote-model" }] }));
+  }), context);
+  const data = await store.read();
+  await store.mutate(data.revision, (library) => {
+    for (const route of library.routes.filter((route) => route.id.startsWith("s5090-"))) route.endpoint = `${target}/v1`;
+    return library;
+  });
   const status = await new ProductService(store).localRuntimeStatus();
   assert.equal(status.preferredLocal, "s5090-ornith");
   assert.deepEqual(status.localCallers, ["s5090-ornith", "s5090-qwen"]);
   assert.ok(Array.isArray(status.runningInstances));
-  assert.ok(Array.isArray(status.loadedModels));
+  assert.deepEqual(status.loadedModels, ["actual-remote-model"]);
   assert.match(status.message, /Ollama|当前/);
+});
+
+test("unreachable runtime is unknown rather than falsely unloaded", async (context) => {
+  const store = await fixture(context);
+  const target = await listen(http.createServer((_request, response) => { response.writeHead(503); response.end(); }), context);
+  const data = await store.read();
+  await store.mutate(data.revision, (library) => {
+    for (const route of library.routes.filter((route) => route.id.startsWith("s5090-"))) route.endpoint = `${target}/v1`;
+    return library;
+  });
+  assert.match((await new ProductService(store).localRuntimeStatus()).message, /状态未知/);
 });
 
 test("key changes stay private, empty keeps key, clearing removes it", async (context) => {
@@ -197,7 +219,7 @@ test("gateway enforces route token and pinned model, bridges real HTTP SSE", asy
   assert.equal(requests, 1);
 });
 
-test("gateway rejects concurrent requests to the same local model instead of stalling", async (context) => {
+test("gateway queues local requests and sends heartbeat before completion", async (context) => {
   const store = await fixture(context);
   let release;
   const blocker = new Promise((resolve) => { release = resolve; });
@@ -213,11 +235,19 @@ test("gateway rejects concurrent requests to the same local model instead of sta
   const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("local-a")}` };
   const first = fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "same-local", input: "first" }) });
   await new Promise((resolve) => setTimeout(resolve, 25));
-  const second = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "same-local", input: "second" }) });
-  assert.equal(second.status, 409);
-  assert.match((await second.json()).error.message, /同一个本地模型/);
+  const second = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "same-local", input: "second", stream: true }) });
+  assert.equal(second.status, 200);
+  const reader = second.body.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /: waiting/);
   release();
   assert.equal((await first).status, 200);
+  let events = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    events += new TextDecoder().decode(chunk.value);
+  }
+  assert.match(events, /response.completed/);
 });
 
 test("verification record invalidates when key changes", async (context) => {
@@ -247,14 +277,14 @@ test("Anthropic gateway authenticates only with provider key and returns tool ca
   const target = await listen(http.createServer(async (request, response) => {
     assert.equal(request.headers["x-api-key"], "anthropic-private");
     assert.equal(request.headers.authorization, undefined);
-    assert.equal(request.url, "/messages");
+    assert.equal(request.url, "/v1/messages");
     let body = "";
     for await (const chunk of request) body += chunk;
     assert.equal(JSON.parse(body).tools[0].name, "exec");
     response.end(JSON.stringify({ content: [{ type: "tool_use", id: "tool-1", name: "exec", input: { command: "pwd" } }], usage: { input_tokens: 2, output_tokens: 1 } }));
   }), context);
   await store.read();
-  await store.save({ id: "claude-test", name: "Claude", endpoint: target, protocol: "anthropic", model: "test" }, 1, "anthropic-private");
+  await store.save({ id: "claude-test", name: "Claude", endpoint: `${target}/v1`, protocol: "anthropic", model: "test" }, 1, "anthropic-private");
   const gateway = await listen(createGateway(store), context);
   const result = await fetch(`${gateway}/routes/claude-test/v1/responses`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${await store.token("claude-test")}` }, body: JSON.stringify({ model: "test", input: "pwd", tools: [{ type: "function", name: "exec", parameters: { type: "object" } }] }) });
   const data = await result.json();
