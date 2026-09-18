@@ -64,6 +64,7 @@ struct ProductResponse: Decodable {
     var routerRunning: Bool?
     var windows: [WorkWindow]?
     var orphans: [WorkWindow]?
+    var unmanaged: [UnmanagedWindow]?
     var window: WorkWindow?
     var pid: Int?
     var disk: DiskUsage?
@@ -170,6 +171,20 @@ struct WorkWindow: Decodable, Identifiable, Hashable {
     var homePath: String?
 }
 
+// 「专用单模型窗口」按设计不写进注册表，所以它们不在 windows 里；单独列出来才看得见、删得掉。
+struct UnmanagedWindow: Decodable, Identifiable, Hashable {
+    let windowID: String
+    let slot: String
+    var running: Bool?
+    var pid: Int?
+    var bytes: Int64?
+    // 同一个 id 可能同时存在于 instances-v2 和 continuations-v1，
+    // 所以给 ForEach 用的标识必须带上槽位，否则两个条目会被当成同一个。
+    var id: String { "\(slot)/\(windowID)" }
+
+    private enum CodingKeys: String, CodingKey { case windowID = "id", slot, running, pid, bytes }
+}
+
 struct LocalRuntimeStatus: Decodable {
     let preferredLocal: String
     let localCallers: [String]
@@ -204,6 +219,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var showSwitch = false
     @Published var windows: [WorkWindow] = []
     @Published var orphans: [WorkWindow] = []
+    @Published var unmanaged: [UnmanagedWindow] = []
     @Published var newWindowModel = ""
     @Published var disk: DiskUsage?
     @Published var diskPlan: DiskPlan?
@@ -311,6 +327,7 @@ final class LibraryViewModel: ObservableObject {
         if let value = response.routerRunning { routerRunning = value }
         if let values = response.windows { windows = values }
         if let values = response.orphans { orphans = values }
+        if let values = response.unmanaged { unmanaged = values }
         if let value = response.disk { disk = value }
         if let value = response.cleanupPlan { diskPlan = value }
         if let value = response.diskPolicy { diskPolicy = value }
@@ -449,6 +466,25 @@ final class LibraryViewModel: ObservableObject {
         let response = await call(["open-codex", id])
         accept(response)
         raiseWindowIfNeeded(response.pid ?? response.window?.pid)
+        busy = false
+    }
+
+    // 单模型窗口：它不在注册表里，用 launch（独立窗口）会复用磁盘上已有的那份资料。
+    func openUnmanaged(_ id: String) async {
+        busy = true
+        success = nil
+        message = "正在打开单模型窗口…"
+        let response = await call(["launch", id])
+        accept(response)
+        raiseWindowIfNeeded(response.pid)
+        busy = false
+    }
+
+    func deleteUnmanaged(_ id: String) async {
+        busy = true
+        success = nil
+        let response = await call(["delete-unmanaged-window", id], timeout: 600)
+        accept(response)
         busy = false
     }
 

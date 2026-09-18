@@ -185,6 +185,61 @@ export class ProductService {
       return [];
     }
   }
+  // 「专用单模型窗口」按设计不写进注册表，于是它们既不在窗口面板里、也没有入口关掉或删掉。
+  // 实测磁盘上已经堆了 11 个、3.8 GB——用户只能看着空间变少却找不到是谁占的。
+  // 这里把它们读出来，交给界面显示与管理。
+  async unmanagedWindows() {
+    const running = await this.runningWindows();
+    const found = [];
+    for (const slot of ["instances-v2", "continuations-v1"]) {
+      let names = [];
+      try { names = await fs.readdir(path.join(this.store.root, slot)); } catch { continue; }
+      for (const id of names) {
+        const base = path.join(this.store.root, slot, id);
+        let stat;
+        try { stat = await fs.stat(base); } catch { continue; }
+        if (!stat.isDirectory()) continue;
+        found.push({
+          id,
+          slot,
+          root: base,
+          homePath: path.join(base, "codex-home"),
+          running: running.has(id),
+          pid: running.get(id) ?? 0,
+          bytes: 0,
+        });
+      }
+    }
+    if (!found.length) return found;
+    // 一次 du 算完所有目录，比逐个读文件快得多。
+    try {
+      const { stdout } = await execFileAsync("/usr/bin/du", ["-sk", ...found.map((entry) => entry.root)], { maxBuffer: 8 * 1024 * 1024 });
+      for (const line of String(stdout).split("\n")) {
+        const [kb, ...rest] = line.trim().split(/\s+/);
+        const target = rest.join(" ");
+        const hit = found.find((entry) => entry.root === target);
+        if (hit && Number(kb) > 0) hit.bytes = Number(kb) * 1024;
+      }
+    } catch { }
+    return found.sort((left, right) => right.bytes - left.bytes);
+  }
+
+  // 删除一个不在注册表里的单模型窗口目录：正在跑的先拒绝，避免删掉正在用的资料。
+  async deleteUnmanagedWindow(id = "") {
+    const wanted = String(id ?? "").trim();
+    if (!wanted) throw new Error("请指定要删除的窗口");
+    const found = await this.unmanagedWindows();
+    const target = found.find((entry) => entry.id === wanted);
+    if (!target) throw new Error(`没有找到窗口「${wanted}」`);
+    if (target.running) throw new Error(`「${wanted}」正在运行，请先关闭它再删除`);
+    await fs.rm(target.root, { recursive: true, force: true });
+    return {
+      ...(await this.switchSummary()),
+      unmanaged: await this.unmanagedWindows(),
+      message: `已删除窗口「${wanted}」（${Math.round(target.bytes / 1024 / 1024)} MB）。这是一次性资料，删掉就没了。`,
+    };
+  }
+
   // 跑着但不在注册表里的 windows-v1 窗口：并发建窗丢过记录时会留下这种孤儿，
   // 它们在任务管理器里占着内存，用户却在助手界面里看不到、也关不掉。
   async orphanWindows() {
@@ -606,6 +661,7 @@ export class ProductService {
     }
     return {
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
+      unmanaged: await this.unmanagedWindows(),
       windows: await Promise.all(registry.windows.map(async (entry) => ({
         id: entry.id,
         name: entry.name,

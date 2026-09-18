@@ -11,6 +11,7 @@ struct ModelLibraryView: View {
     @State private var renameDraft = ""
 
     @State private var showModels = false
+    @State private var unmanagedDeleteTarget: UnmanagedWindow?
 
     // 首页回答的是「我有哪些窗口、现在能不能进去」，而不是「我有哪些模型」。
     // 模型配置是低频动作，收进「模型库」弹窗里改。
@@ -29,6 +30,19 @@ struct ModelLibraryView: View {
         .sheet(isPresented: $library.showDiagnostics) { diagnosticsSheet }
         .sheet(isPresented: $library.showExpert) { ExpertSettingsView(library: library) }
         .sheet(item: $renameTarget) { window in renameSheet(window) }
+        .confirmationDialog("确认删除这个单模型窗口？", isPresented: Binding(
+            get: { unmanagedDeleteTarget != nil },
+            set: { if !$0 { unmanagedDeleteTarget = nil } }
+        ), titleVisibility: .visible) {
+            Button("删除，且不可恢复", role: .destructive) {
+                let target = unmanagedDeleteTarget?.windowID ?? ""
+                unmanagedDeleteTarget = nil
+                Task { await library.deleteUnmanaged(target) }
+            }
+            Button("取消", role: .cancel) { unmanagedDeleteTarget = nil }
+        } message: {
+            Text(unmanagedDeleteTarget.map { "将删除「\($0.slot)/\($0.windowID)」，占用 \(humanBytes($0.bytes))。这个窗口的对话和资料会一起消失。" } ?? "")
+        }
         .confirmationDialog("确认清理会话副本？", isPresented: $library.showCleanupConfirm, titleVisibility: .visible) {
             Button("删除并释放空间", role: .destructive) { Task { await library.applyCleanup() } }
             Button("取消", role: .cancel) { }
@@ -102,6 +116,7 @@ struct ModelLibraryView: View {
                     newWindowCard
                 }
                 if !library.orphans.isEmpty { orphanRow }
+                if !library.unmanaged.isEmpty { unmanagedSection }
             }
             .padding(20)
         }
@@ -158,6 +173,40 @@ struct ModelLibraryView: View {
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .onTapGesture { Task { await library.openWindow(window.id) } }
         .help(window.homePath ?? "")
+    }
+
+    // 这些是「专用单模型窗口」留下的资料目录：不写注册表，所以以前既看不见也删不掉，
+    // 实测能堆到 3.8 GB。现在列出来，能打开、也能删。
+    private var unmanagedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("单模型窗口").font(.callout.weight(.semibold))
+                Text("\(library.unmanaged.count) 个 · 合计 \(humanBytes(library.unmanaged.reduce(Int64(0)) { $0 + ($1.bytes ?? 0) }))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text("用「⋯ → 专用单模型窗口」开出来的，每个只跑一个模型；不用了就删，腾出空间。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            ForEach(library.unmanaged) { entry in
+                HStack(spacing: 10) {
+                    Image(systemName: entry.running == true ? "circle.fill" : "circle").font(.system(size: 7))
+                        .foregroundStyle(entry.running == true ? .green : .secondary.opacity(0.5))
+                    Text(library.displayName(forModelKey: entry.windowID) ?? entry.windowID).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Text(entry.slot).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    Text(humanBytes(entry.bytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    if entry.running == true {
+                        Text("运行中 · PID \(entry.pid ?? 0)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
+                    }
+                    Spacer()
+                    Button("打开") { Task { await library.openUnmanaged(entry.windowID) } }.controlSize(.small).disabled(library.busy)
+                    Button("删除") { unmanagedDeleteTarget = entry }.controlSize(.small)
+                        .disabled(library.busy || entry.running == true)
+                        .help(entry.running == true ? "正在运行，先关掉它再删" : "删掉这个窗口的资料目录，不可恢复")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
     }
 
     private var newWindowCard: some View {
