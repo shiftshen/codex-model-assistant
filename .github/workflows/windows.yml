@@ -20,13 +20,22 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-      - name: Install SQLite CLI
+      - name: Install pinned SQLite CLI
         shell: powershell
         run: |
-          choco install sqlite -y --no-progress
-          $sqlite = (Get-Command sqlite3.exe).Source
+          $ErrorActionPreference = "Stop"
+          $url = "https://www.sqlite.org/2026/sqlite-tools-win-x64-3530400.zip"
+          $expected = "f46ee2475de4cbe287e6e5f7d43c838796b14e7379cd216bdbb28d391429f9fc"
+          $zip = Join-Path $env:RUNNER_TEMP "sqlite-tools-win-x64-3530400.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "sqlite-tools"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "SQLite SHA256 mismatch: $actual" }
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $sqlite = Get-ChildItem $extract -Recurse -Filter sqlite3.exe | Select-Object -First 1
+          if (-not $sqlite) { throw "sqlite3.exe not found in official SQLite archive" }
           New-Item -ItemType Directory -Force .runtime-cache/windows | Out-Null
-          Copy-Item $sqlite .runtime-cache/windows/sqlite3.exe
+          Copy-Item $sqlite.FullName .runtime-cache/windows/sqlite3.exe
           .\.runtime-cache\windows\sqlite3.exe --version
       - name: Install dependencies
         run: npm ci
