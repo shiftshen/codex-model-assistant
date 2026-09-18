@@ -12,6 +12,16 @@ import { buildRouterTable, routerID, routerTableEntry } from "./router.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, createResponseStream, nativePayload } from "./protocol-adapter.mjs";
 import { anthropicStreamParser, chatStreamParser } from "./stream-parsers.mjs";
 import { chatgptBaseURL, officialHeaders, officialPayload, officialTokens } from "./chatgpt-auth.mjs";
+import {
+  buildCompactedInput,
+  estimateTokens,
+  extractSummary,
+  fallbackSummary,
+  safeSplitIndex,
+  summaryRequest,
+  transcriptOf,
+} from "./context-compaction.mjs";
+export { estimateTokens };
 
 export const gatewayPort = 18793;
 export const gatewayURL = `http://127.0.0.1:${gatewayPort}`;
@@ -44,23 +54,59 @@ export const gatewayBuild = createHash("sha256")
   .digest("hex")
   .slice(0, 12);
 
-export async function limitedJSON(stream, limit = 8 * 1024 * 1024) {
-  const chunks = [];
-  let length = 0;
-  for await (const chunk of stream) {
-    length += chunk.length;
-    if (length > limit) throw new Error("请求或响应超过大小限制");
-    chunks.push(Buffer.from(chunk));
+// 请求体上限按「整段对话历史」来定，不是按一轮对话：Codex 每发一次请求都会把完整历史
+// （含工具输出的全文）重新发上来，所以一个几十 MB 的长会话完全正常。
+// 以前是 8 MB，长会话必然撞线，用户看到的是「502 请求或响应超过大小限制」——看起来像模型坏了，
+// 其实只是网关自己把请求挡掉了。
+export const requestLimitBytes = 256 * 1024 * 1024;
+export const responseLimitBytes = 512 * 1024 * 1024;
+
+export class PayloadTooLargeError extends Error {
+  constructor(message, limit, kind) {
+    super(message);
+    this.name = "PayloadTooLargeError";
+    this.status = 413;
+    this.limit = limit;
+    this.kind = kind;
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function limitedText(stream, limit = 32 * 1024 * 1024) {
+export async function limitedJSON(stream, limit = requestLimitBytes) {
   const chunks = [];
   let length = 0;
   for await (const chunk of stream) {
     length += chunk.length;
-    if (length > limit) throw new Error("请求或响应超过大小限制");
+    if (length > limit) {
+      throw new PayloadTooLargeError(
+        `这段对话的请求体超过 ${Math.round(limit / 1024 / 1024)} MB 上限（已读到 ${Math.round(length / 1024 / 1024)} MB）。`
+        + "多轮长对话会把整段历史一起发上来，工具输出的长文本是主要来源。"
+        + "可以：① 新开一个会话继续同一件事；② 在当前会话里改用「压缩」后继续；③ 在助手设置里调高上限。",
+        limit,
+        "request",
+      );
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  const value = JSON.parse(text);
+  // 调用方常常拿不到原始字节数（流已经读完了），而上下文预检需要它。
+  // 挂在返回值上既不用改所有调用点，也不会混进 JSON 本身。
+  if (value && typeof value === "object" && !Array.isArray(value)) Object.defineProperty(value, "__bytes", { value: length, enumerable: false });
+  return value;
+}
+
+async function limitedText(stream, limit = responseLimitBytes) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of stream) {
+    length += chunk.length;
+    if (length > limit) {
+      throw new PayloadTooLargeError(
+        `供应商返回的响应超过 ${Math.round(limit / 1024 / 1024)} MB 上限。请缩小提问范围或换用上下文更小的模型。`,
+        limit,
+        "response",
+      );
+    }
     chunks.push(Buffer.from(chunk));
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -93,8 +139,91 @@ export const quotaPattern = /quota|resource_exhausted|额度|余额|balance|cred
 // 让 Codex 停止无效重试并显示真实原因：4xx 判为请求级失败，额度类判为额度失败，其余保持可重试。
 export function failureCode(status, detail) {
   if (quotaPattern.test(detail) || status === 429) return "insufficient_quota";
+  // 供应商自己报的上下文超限：单独给一个 code，界面才能提示「换个上下文更大的模型」。
+  if (/context_window|context length|ContextWindowExceeded|maximum context|too many tokens/i.test(String(detail ?? ""))) return "context_length_exceeded";
+  // 超限要说清是「网关挡下的」而不是「模型坏了」：这个 code 让界面能给出可操作的建议。
+  if (status === 413) return "payload_too_large";
   if (status >= 400 && status < 500) return "invalid_prompt";
   return "";
+}
+
+// 发送前先按路由自己的 contextWindow 比一比：不匹配就直接告诉用户换哪个模型，
+// 而不是把请求发出去、等一分钟、再收到一句供应商的英文报错。
+export function contextGuard(table, payload, bodyBytes) {
+  const pick = (entries) => entries
+    .filter((entry) => Number(entry.route.contextWindow) > 0)
+    .sort((left, right) => Number(right.route.contextWindow) - Number(left.route.contextWindow))[0] ?? null;
+  return {
+    estimate: estimateTokens(payload, bodyBytes),
+    suggest: () => pick(table),
+  };
+}
+
+export function contextGuardMessage(route, estimate, best) {
+  const used = `${Math.round(estimate / 1000)}K tokens 左右`;
+  const limit = Math.round(Number(route.contextWindow) / 1000);
+  const advice = best && best.route.id !== route.id && Number(best.route.contextWindow) > Number(route.contextWindow)
+    ? `这个窗口里「${best.route.name}」的上下文是 ${Math.round(Number(best.route.contextWindow) / 1000)}K，改用它可以继续同一个对话。`
+    : "可以在 Codex 顶部换一个上下文更大的模型，或新开一个会话继续同一件事。";
+  return `这段对话约 ${used}，超过「${route.name}」的上下文上限（${limit}K）。${advice}`;
+}
+
+// 压缩：把较早的记录换成摘要，保留最近一段完整对话。
+// 保留量取窗口的 45%——留出输出空间，也让摘要本身有地方放。
+// 返回值里的 note 会拼进用户可见的说明，让用户知道发生了什么，而不是悄悄改了他的历史。
+export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45 }) {
+  const items = payload?.input;
+  if (!Array.isArray(items) || items.length < 6) return null;
+  const keepBudgetBytes = Math.max(64 * 1024, Math.floor(limit * keepRatio) * 3.2);
+  const split = safeSplitIndex(items, keepBudgetBytes);
+  if (!split) return null;
+  const head = items.slice(0, split);
+  const tail = items.slice(split);
+
+  // 摘要请求本身也要装得下：给 128K 的模型做摘要时，把 150 万 token 的记录整段丢过去
+  // 只会让摘要这一步也失败。所以先估一下摘要请求的量，装不下就换本机窗口最大的那个模型来做。
+  const transcript = transcriptOf(head);
+  const summarizer = await pickSummarizer(store, route, Math.round(transcript.length / 3.2));
+  let summary = "";
+  try {
+    const key = await store.secret(summarizer.credentialID);
+    const request = summaryRequest(transcript, summarizer.model);
+    // 摘要请求也要走和正常请求同一套协议转换：chat / anthropic 供应商收到 Responses 结构只会报错。
+    let suffix = "responses";
+    let summaryBody = nativePayload(request, summarizer.model);
+    if (summarizer.protocol === "chat") {
+      suffix = "chat/completions";
+      summaryBody = toChat(request).body;
+    } else if (summarizer.protocol === "anthropic") {
+      suffix = "messages";
+      summaryBody = toAnthropic(toChat(request).body);
+    }
+    const result = await upstream(summarizer, key, suffix, summaryBody, 120000, signal);
+    const body = await limitedJSON(result.body, responseLimitBytes);
+    if (summarizer.protocol === "chat") summary = String(body?.choices?.[0]?.message?.content ?? "").trim();
+    else if (summarizer.protocol === "anthropic") summary = extractSummary({ output: (body?.content ?? []).map((part) => ({ type: "message", content: [part] })) });
+    else summary = extractSummary(body);
+  } catch {
+    // 摘要调不通也要让对话能继续：退回「列出被裁掉的用户消息」，并把这件事如实写在提示里。
+    summary = "";
+  }
+  if (!summary) summary = fallbackSummary(head);
+  const dropped = head.length;
+  return {
+    input: buildCompactedInput({ summary, tail, droppedCount: dropped }),
+    note: `较早的 ${dropped} 条记录已压缩为摘要（保留最近 ${tail.length} 条，摘要由 ${summarizer.name || summarizer.id} 生成）`,
+  };
+}
+
+// 优先用目标模型自己（不额外花钱、不跨供应商）；它装不下摘要请求时，
+// 退而用本机窗口最大的那个条目——总比摘要失败、退化成「列出被裁掉的用户消息」好。
+export async function pickSummarizer(store, route, neededTokens) {
+  if (Number(route.contextWindow) >= neededTokens) return route;
+  const data = await store.read();
+  const candidates = data.routes
+    .filter((entry) => !entry.archived && entry.protocol !== "oauth" && entry.model && Number(entry.contextWindow) > 0)
+    .sort((left, right) => Number(right.contextWindow) - Number(left.contextWindow));
+  return candidates[0] ?? route;
 }
 
 export async function upstream(route, key, suffix, body, timeout = 3600000, signal) {
@@ -259,12 +388,37 @@ export function createGateway(store = new ModelStore(), options = {}) {
         return sendJSON(response, 200, await limitedJSON(result.body));
       }
       if (request.method !== "POST" || endpoint !== "responses") return sendJSON(response, 405, { error: { message: "请求方法不支持" } });
-      const payload = await limitedJSON(request);
+      // 先量一下请求体：后面既要用它做上下文预检，也要拿原始字节数去比 contextWindow。
+      const payload = await limitedJSON(request, requestLimitBytes);
+      const payloadBytes = Number(payload.__bytes) || 0;
+      let payloadBytesNote = "";
       if (switched) {
-        const entry = routerTableEntry(buildRouterTable((await store.read()).routes), payload.model);
+        const table = buildRouterTable((await store.read()).routes);
+        const entry = routerTableEntry(table, payload.model);
         if (!entry) return sendJSON(response, 400, { error: { message: "所选模型不在可切换窗口内，请在模型助手中重新打开切换窗口" } });
         route = entry.route;
         payload.model = route.model;
+        // 长会话在切换模型时最容易踩这个坑：用户以为「换个模型就能继续」，
+        // 结果新模型的上下文比原来小。这里不再直接拒绝，而是先压缩再继续（见下方 compact）。
+        const guard = contextGuard(table, payload, payloadBytes);
+        const limit = Number(route.contextWindow);
+        if (limit > 0 && guard.estimate > limit) {
+          const compacted = await compactForWindow({ store, route, payload, limit, signal: abort.signal });
+          if (compacted) {
+            payload.input = compacted.input;
+            payloadBytesNote = compacted.note;
+            process.stdout.write(`[compact] ${payload.model}: ${compacted.note}\n`);
+          } else {
+            const best = guard.suggest();
+            return sendJSON(response, 400, {
+              error: {
+                code: "context_length_exceeded",
+                message: contextGuardMessage(route, guard.estimate, best),
+                type: "model_gateway_error",
+              },
+            });
+          }
+        }
       } else if (!route.model || payload.model !== route.model) {
         return sendJSON(response, 400, { error: { message: "模型与实例不匹配，请在助手中创建对应实例" } });
       }
@@ -391,6 +545,9 @@ export function createGateway(store = new ModelStore(), options = {}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const server = createGateway();
+  // Node 默认把请求体收在 16 KB 以内（maxRequestsPerSocket 之外还有 body 上限），
+  // 不放开的话 256 MB 的上限根本走不到，请求会被 Node 自己先掐断。
+  server.maxRequestsPerSocket = 0;
   server.requestTimeout = 3650000;
   server.headersTimeout = 15000;
   server.on("error", (error) => {

@@ -396,3 +396,96 @@ test("启动模型窗口前清掉不重要副本，首次「导入原会话并�
     await fs.access(path.join(winHome, "sessions", `${id}.jsonl`));
   }
 });
+
+// 长会话回归：Codex 每轮都把整段历史发上来，8 MB 上限会让「换个模型继续」直接 502。
+// 这里发一个 12 MB 的请求体（超过旧上限、远低于新上限），必须能正常走到上游。
+test("长会话的大请求体能通过网关（旧 8 MB 上限会让它 502）", async (context) => {
+  const store = await fixture(context);
+  let receivedBytes = 0;
+  const upstreamURL = await listen(http.createServer((request, response) => {
+    let size = 0;
+    request.on("data", (chunk) => { size += chunk.length; });
+    request.on("end", () => {
+      receivedBytes = size;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ choices: [{ message: { content: "MODEL_ASSISTANT_OK" } }], usage: { prompt_tokens: 1, completion_tokens: 2 } }));
+    });
+  }), context);
+  await store.read();
+  await store.save({ id: "big-route", name: "Big", endpoint: upstreamURL, protocol: "chat", model: "big-model" }, 1, "upstream-secret");
+  const gateway = await listen(createGateway(store), context);
+  const endpoint = `${gateway}/routes/big-route/v1/responses`;
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("big-route")}` };
+  // 12 MB 的填充：旧上限 8 MB 会在这里抛错并回 502。
+  const filler = "x".repeat(12 * 1024 * 1024);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "big-model", input: filler, stream: false }),
+  });
+  assert.equal(response.status, 200, `12 MB 请求体应被接受，实际 ${response.status}`);
+  assert.ok(receivedBytes > 12 * 1024 * 1024, `上游应收到完整请求体，实际 ${receivedBytes}`);
+  assert.match(await response.text(), /MODEL_ASSISTANT_OK/);
+});
+
+test("超过新上限时报 413 并说清怎么办，而不是含糊的 502", async (context) => {
+  const store = await fixture(context);
+  await store.read();
+  await store.save({ id: "limit-route", name: "Limit", endpoint: "http://127.0.0.1:1/v1", protocol: "chat", model: "limit-model" }, 1, "upstream-secret");
+  const gateway = await listen(createGateway(store), context);
+  const endpoint = `${gateway}/routes/limit-route/v1/responses`;
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("limit-route")}` };
+  // 直接把上限压到很小来验证报错路径（否则要发 256 MB）。
+  const { limitedJSON, PayloadTooLargeError, requestLimitBytes } = await import("../src/model-gateway.mjs");
+  assert.equal(requestLimitBytes, 256 * 1024 * 1024);
+  const { Readable } = await import("node:stream");
+  await assert.rejects(() => limitedJSON(Readable.from([Buffer.alloc(2048)]), 1024), (error) => {
+    assert.ok(error instanceof PayloadTooLargeError);
+    assert.equal(error.status, 413);
+    assert.match(error.message, /超过 0 MB 上限|超过 1 MB 上限|超过/);
+    assert.match(error.message, /新开一个会话|压缩/);
+    return true;
+  });
+  // 路由不存在时不该被误当成超限
+  const missing = await fetch(`${gateway}/routes/nope/v1/responses`, { method: "POST", headers, body: "{}" });
+  assert.equal(missing.status, 401);
+});
+
+// 长会话换模型最常见的失败：新模型上下文比原来的小，用户以为「换个模型就能继续」。
+// 网关要提前算清楚并推荐本窗口里更大的那个，而不是把请求发出去等供应商报英文错。
+test("长会话切到小上下文模型时提前拦下，并推荐本窗口里更大的模型", async (context) => {
+  const store = await fixture(context);
+  let upstreamHits = 0;
+  const upstreamURL = await listen(http.createServer((request, response) => {
+    upstreamHits += 1;
+    request.resume();
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ choices: [{ message: { content: "MODEL_ASSISTANT_OK" } }], usage: { prompt_tokens: 1, completion_tokens: 2 } }));
+    });
+  }), context);
+  await store.read();
+  // 小上下文 + 大上下文两个可切换路由
+  await store.save({ id: "small-ctx", name: "小上下文", endpoint: upstreamURL, protocol: "chat", model: "small-ctx", contextWindow: 512000, credentialID: "small-ctx" }, 1, "k1");
+  const data = await store.read();
+  await store.save({ id: "big-ctx", name: "大上下文", endpoint: upstreamURL, protocol: "chat", model: "big-ctx", contextWindow: 1000000, credentialID: "big-ctx" }, data.revision, "k2");
+  const gateway = await listen(createGateway(store), context);
+  const endpoint = `${gateway}/router/v1/responses`;
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
+  // 2 MB ≈ 65 万 tokens：超过 512K 的小上下文，但 1M 的大上下文能接住（就是现场那次的形态）。
+  const big = "y".repeat(2 * 1024 * 1024);
+  const blocked = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "small-ctx", input: big, stream: false }) });
+  const body = await blocked.json();
+  assert.equal(blocked.status, 400);
+  assert.equal(body.error.code, "context_length_exceeded");
+  assert.match(body.error.message, /超过「小上下文」的上下文上限（512K）/);
+  assert.match(body.error.message, /大上下文/);
+  assert.match(body.error.message, /1000K/);
+  assert.equal(upstreamHits, 0, "预检拦下时不该真的打到供应商");
+
+  // 换成大上下文模型：同样的请求要放行
+  const allowed = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "big-ctx", input: big, stream: false }) });
+  assert.equal(allowed.status, 200);
+  assert.equal(upstreamHits, 1);
+  assert.match(await allowed.text(), /MODEL_ASSISTANT_OK/);
+});
