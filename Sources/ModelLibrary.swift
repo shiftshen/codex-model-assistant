@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 
 struct ManagedModel: Codable, Identifiable, Hashable {
@@ -62,6 +63,7 @@ struct ProductResponse: Decodable {
     var switchModels: [SwitchableModel]?
     var routerRunning: Bool?
     var windows: [WorkWindow]?
+    var orphans: [WorkWindow]?
     var window: WorkWindow?
     var pid: Int?
 }
@@ -110,6 +112,7 @@ final class LibraryViewModel: ObservableObject {
     @Published var routerRunning = false
     @Published var showSwitch = false
     @Published var windows: [WorkWindow] = []
+    @Published var orphans: [WorkWindow] = []
     @Published var newWindowModel = ""
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
@@ -129,7 +132,17 @@ final class LibraryViewModel: ObservableObject {
     func isRunning(_ model: ManagedModel) -> Bool { localStatus?.runningInstances.contains(model.id) == true }
     func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
 
-    func call(_ arguments: [String], input: Data? = nil) async -> ProductResponse {
+    // 管道读取结果：子进程的输出必须边跑边收，只等不读会在输出超过管道缓冲时两边一起卡死。
+    private final class PipeCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Data?
+        func store(_ data: Data) { lock.lock(); value = data; lock.unlock() }
+        func take() -> Data? { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    // 带超时的调用：CLI 万一卡住也要把控制权还给界面。
+    // 否则 busy 会一直是 true，所有按钮永久变灰——表现就是「只能开一个 Codex，点新建窗口没反应」。
+    func call(_ arguments: [String], input: Data? = nil, timeout: TimeInterval = 180) async -> ProductResponse {
         await Task.detached {
             guard let resources = Bundle.main.resourceURL else { return ProductResponse(ok: false, message: "应用资源缺失，请重新安装") }
             let process = Process()
@@ -145,7 +158,26 @@ final class LibraryViewModel: ObservableObject {
                 try process.run()
                 if let input { try standardInput.fileHandleForWriting.write(contentsOf: input) }
                 try standardInput.fileHandleForWriting.close()
-                let data = output.fileHandleForReading.readDataToEndOfFile()
+                let collected = PipeCollector()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    collected.store(output.fileHandleForReading.readDataToEndOfFile())
+                }
+                let deadline = Date().addingTimeInterval(timeout)
+                while collected.take() == nil, Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                if collected.take() == nil, process.isRunning {
+                    process.terminate()
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    return ProductResponse(ok: false, message: "操作超时：\(arguments.first ?? "命令") 超过 \(Int(timeout)) 秒没有返回，已中止。请点「刷新状态」重试。")
+                }
+                // 进程已经退出：等读取线程收完最后一段输出（通常是毫秒级）。
+                let drainDeadline = Date().addingTimeInterval(3)
+                while collected.take() == nil, Date() < drainDeadline {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                guard let data = collected.take() else { return ProductResponse(ok: false, message: "操作失败：没有拿到结果，请点「刷新状态」重试") }
                 process.waitUntilExit()
                 return try JSONDecoder().decode(ProductResponse.self, from: data)
             } catch { return ProductResponse(ok: false, message: "操作失败：\(error.localizedDescription)") }
@@ -163,6 +195,7 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.switchModels { switchModels = values }
         if let value = response.routerRunning { routerRunning = value }
         if let values = response.windows { windows = values }
+        if let values = response.orphans { orphans = values }
         success = response.ok
     }
 
@@ -230,7 +263,56 @@ final class LibraryViewModel: ObservableObject {
     // 新窗口可能开在当前窗口后面，看起来像「点了没反应」。用进程号把它提到最前。
     private func raiseWindowIfNeeded(_ pid: Int?) {
         guard let pid, pid > 0, let app = NSRunningApplication(processIdentifier: pid_t(pid)) else { return }
+        app.unhide()
         app.activate(options: [.activateAllWindows])
+    }
+
+    // 「置前」：把已经开着但被最小化、被别的窗口压住、或丢在别的桌面上的 Codex 找回来。
+    // 多开时最容易出现的错觉就是「只能开一个」——其实其它窗口都开着，只是看不见。
+    func bringWindowToFront(_ id: String) async {
+        success = nil
+        let pid = windows.first { $0.id == id }?.pid ?? 0
+        guard pid > 0, let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+            message = "这个窗口没有在运行，点「打开」启动它。"
+            success = false
+            return
+        }
+        app.unhide()
+        app.activate(options: [.activateAllWindows])
+        // 激活后等一下再数一下屏幕上有没有它的窗口，避免「命令成功但用户还是看不到」。
+        var visible = visibleWindowCount(pid: pid)
+        for _ in 0..<8 where visible == 0 {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            visible = visibleWindowCount(pid: pid)
+        }
+        let frontmost = app.isActive
+        let name = windows.first { $0.id == id }?.name ?? id
+        // 刷新列表会重写提示语，所以先刷新再写结论。
+        await openSwitch()
+        if visible > 0 || frontmost {
+            message = "已把「\(name)」切到最前。"
+            success = true
+        } else {
+            message = "「\(name)」的进程还在（PID \(pid)），但窗口当前不在屏幕上：多半被最小化了。在 Dock 的 Codex 图标上点一下即可展开。"
+            success = false
+        }
+    }
+
+    // 屏幕上真正可见的窗口数；只统计普通层（layer 0）的窗口。
+    private func visibleWindowCount(pid: Int) -> Int {
+        guard pid > 0, let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return 0 }
+        return list.filter { entry in
+            (entry[kCGWindowOwnerPID as String] as? Int) == pid && ((entry[kCGWindowLayer as String] as? Int) ?? 1) == 0
+        }.count
+    }
+
+    // 接管在跑但没登记进注册表的窗口：并发建窗丢过记录时留下的进程，接管后就能在列表里关闭或重开。
+    func adoptOrphans() async {
+        busy = true
+        success = nil
+        message = "正在接管未登记的窗口…"
+        accept(await call(["adopt-window", "all"]))
+        busy = false
     }
 
     func renameWindow(_ id: String, to name: String) async {

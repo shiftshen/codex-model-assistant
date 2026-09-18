@@ -61,6 +61,8 @@ async function main() {
   if (command === "rename-window") return service.renameWindow(id, process.argv[4] || "");
   if (command === "close-window") return service.closeWindow(id);
   if (command === "delete-window") return service.deleteWindow(id);
+  // 接管在跑但没登记进注册表的窗口（并发建窗时代可能留下的孤儿进程）。
+  if (command === "adopt-window") return service.adoptWindows(id || "all");
   // 遗留入口：等价于打开「窗口 1」。
   if (command === "switch-window") return service.launchSwitchWindow(id || "");
   if (command === "import-history") return service.importHistory(id || "all");

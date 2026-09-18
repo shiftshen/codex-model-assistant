@@ -64,7 +64,10 @@ struct ModelLibraryView: View {
                     .background((library.runningWindowCount > 0 ? Color.green : Color.secondary).opacity(0.12), in: Capsule())
             }
             ScrollView {
-                LazyVStack(spacing: 8) { ForEach(library.windows) { window in windowRow(window) } }
+                LazyVStack(spacing: 8) {
+                    ForEach(library.windows) { window in windowRow(window) }
+                    if !library.orphans.isEmpty { orphanRow }
+                }
             }
             .frame(minHeight: 190)
             Divider()
@@ -139,13 +142,18 @@ struct ModelLibraryView: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer()
-            Button(window.running == true ? "已在运行" : "打开") { Task { await library.openWindow(window.id) } }
-                .disabled(library.busy)
             if window.running == true {
+                Button("置前") { Task { await library.bringWindowToFront(window.id) } }
+                    .disabled(library.busy)
+                    .help("这个窗口开着但被压住/最小化时，用它切到最前")
                 Button("关闭") { Task { await library.closeWindow(window.id) } }.disabled(library.busy)
+            } else {
+                Button("打开") { Task { await library.openWindow(window.id) } }
+                    .disabled(library.busy)
             }
             Menu {
                 Button("用这个窗口的起始模型再开一个") { Task { await library.newWindow(initial: window.initialModel ?? "") } }
+                    .disabled(library.busy)
                 Button("重命名…") { renameDraft = window.name; renameTarget = window }
                 Divider()
                 Button("删除窗口", role: .destructive) { Task { await library.deleteWindow(window.id) } }
@@ -155,6 +163,24 @@ struct ModelLibraryView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // 并发建窗丢过记录时，Codex 进程还在跑但注册表里没有它：这里一次性接管回来。
+    private var orphanRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("发现 \(library.orphans.count) 个没登记的 Codex 窗口").font(.system(size: 13, weight: .semibold))
+            }
+            Text("这些窗口的进程还在运行（\(library.orphans.map { "PID \($0.pid ?? 0)" }.joined(separator: "、"))），但之前不在列表里，所以看起来像「只能开一个」。接管之后就能在列表里关闭或重新打开，不会影响正在进行的对话。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack {
+                Button("接管这些窗口") { Task { await library.adoptOrphans() } }.disabled(library.busy)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var sidebar: some View {

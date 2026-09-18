@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { ModelStore } from "../src/model-store.mjs";
 import { ProductService } from "../src/product-service.mjs";
 import { toAnthropic, sanitizeAnthropicSchema } from "../src/protocol-adapter.mjs";
-import { readWindowRegistry, windowPaths, writeWindowRegistry } from "../src/window-registry.mjs";
+import { readWindowRegistry, windowPaths, windowsRootName, writeWindowRegistry } from "../src/window-registry.mjs";
 
 async function fixture(context) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "cma-multi-"));
@@ -113,11 +114,16 @@ test("每个窗口的运行判定互相独立", async (context) => {
   await withWindows(store);
   const service = new ProductService(store);
   service.runningWindows = async () => new Map([["w2", 11], ["w3", 22]]);
+  service.runningSlots = async () => [
+    { slot: windowsRootName, id: "w2", pid: 11 },
+    { slot: windowsRootName, id: "w3", pid: 22 },
+  ];
   const summary = await service.switchSummary();
   const byID = new Map(summary.windows.map((entry) => [entry.id, entry]));
   assert.equal(byID.get("w2").pid, 11);
   assert.equal(byID.get("w3").pid, 22);
   assert.equal(byID.get("router").running, false);
+  assert.deepEqual(summary.orphans, []);
 });
 
 test("只有该窗口自己有进程时，ID 校验才通过（router 用 router-v1 目录）", async (context) => {
@@ -126,4 +132,32 @@ test("只有该窗口自己有进程时，ID 校验才通过（router 用 router
   service.windowProcessCommand = async () => `/Applications/Codex.app/Contents/MacOS/ChatGPT --user-data-dir=${windowPaths(store.root, "router").userDataPath}`;
   assert.equal(await service.assertWindowProcess(99, "router"), true);
   await assert.rejects(() => service.assertWindowProcess(99, "w2"), /不是「w2」窗口的进程/);
+});
+
+// 关窗后 Codex 的 crashpad 助手会被 reparent 到 init，不受进程组信号影响，每开关一次留下两个。
+// 多开重度使用时这些进程会一直堆积，所以要按窗口目录精确收掉，同时不能碰别的窗口。
+test("清理窗口残留助手进程时只认本窗口目录，不误伤别的窗口", async (context) => {
+  const store = await fixture(context);
+  await withWindows(store);
+  const service = new ProductService(store);
+  const markerFor = (id) => `--database=${windowPaths(store.root, id).userDataPath}/Crashpad`;
+  // sh 的 argv 里保留标记，子进程 sleep 让它活着，模拟 reparent 到 init 的助手进程。
+  // 必须是两条命令：/bin/sh 对「唯一的简单命令」会直接 exec，那样 argv 里的标记就没了。
+  const spawnHelper = (id) => spawn("/bin/sh", ["-c", "sleep 30; :", "sh", markerFor(id)], { stdio: "ignore", detached: true });
+  const mine = spawnHelper("w2");
+  const other = spawnHelper("w3");
+  context.after(() => {
+    for (const child of [mine, other]) { try { process.kill(-child.pid, "SIGKILL"); } catch { /* 已经退出 */ } }
+  });
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const waitFor = async (check, timeoutMs = 3000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) { if (check()) return true; await new Promise((resolve) => setTimeout(resolve, 50)); }
+    return check();
+  };
+  assert.equal(await waitFor(() => alive(mine.pid) && alive(other.pid)), true, "两个助手进程都要先跑起来");
+
+  assert.equal(await service.sweepWindowHelpers("w2"), 1, "只应该收掉 w2 的助手");
+  assert.equal(await waitFor(() => !alive(mine.pid)), true, "w2 的助手必须被收掉");
+  assert.equal(alive(other.pid), true, "w3 的助手不能被误杀");
 });

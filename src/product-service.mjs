@@ -12,15 +12,16 @@ import { localCallers, readExpertPolicy } from "./expert-policy.mjs";
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
 import {
+  allocateWindow,
   findWindow,
   isValidWindowID,
   legacyWindowID,
-  nextWindowID,
-  nextWindowName,
+  registerRunningWindow,
   readWindowRegistry,
+  removeWindow,
+  updateWindow,
   windowPaths,
   windowsRootName,
-  writeWindowRegistry,
 } from "./window-registry.mjs";
 import {
   importConversations,
@@ -78,20 +79,34 @@ export function runningInstancesFromPS(output, root) {
   return [...parseRunningWindows(output, root).keys()].sort();
 }
 
-// 同一个窗口可能有多个子进程共用同一 user-data-dir（主进程 + 渲染进程），取最先出现的那个 pid。
-export function parseRunningWindows(output, root) {
+// 解析出运行中的 Codex 进程属于哪个槽位：windows-v1/<id>、router-v1 由注册表管理，
+// instances-v2 / continuations-v1 是更早的「一个模型一个窗口」用法，不参与注册表比对。
+export function parseRunningSlots(output, root) {
   const escapedRoot = path.resolve(root).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    `--user-data-dir=${escapedRoot}/(?:(?:instances-v2|continuations-v1|${windowsRootName})/([^/]+)|router-v1)/browser-data`,
+    `--user-data-dir=${escapedRoot}/(?:(instances-v2|continuations-v1|${windowsRootName})/([^/]+)|router-v1)/browser-data`,
   );
-  const found = new Map();
+  const found = [];
+  const seen = new Set();
   for (const line of String(output ?? "").split("\n")) {
     const match = line.match(pattern);
     if (!match) continue;
-    const id = match[1] ?? legacyWindowID;
-    if (found.has(id)) continue;
+    const slot = match[1] ?? "router-v1";
+    const id = match[2] ?? legacyWindowID;
+    if (seen.has(`${slot}/${id}`)) continue;
+    seen.add(`${slot}/${id}`);
     const pid = Number((line.match(/^\s*(\d+)\s/) || [])[1]);
-    found.set(id, Number.isInteger(pid) ? pid : 0);
+    found.push({ slot, id, pid: Number.isInteger(pid) ? pid : 0 });
+  }
+  return found;
+}
+
+// 同一个窗口可能有多个子进程共用同一 user-data-dir（主进程 + 渲染进程），取最先出现的那个 pid。
+export function parseRunningWindows(output, root) {
+  const found = new Map();
+  for (const entry of parseRunningSlots(output, root)) {
+    if (found.has(entry.id)) continue;
+    found.set(entry.id, entry.pid);
   }
   return found;
 }
@@ -99,13 +114,34 @@ export function parseRunningWindows(output, root) {
 export class ProductService {
   constructor(store = new ModelStore()) { this.store = store; }
   // 窗口运行状态：id → pid（0 表示命令行里没有 pid，通常来自测试夹具）。
-  async runningWindows() {
+  async runningSlots() {
     try {
       const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 });
-      return parseRunningWindows(stdout, this.store.root);
+      return parseRunningSlots(stdout, this.store.root);
     } catch {
-      return new Map();
+      return [];
     }
+  }
+  async runningWindows() {
+    const found = new Map();
+    for (const entry of await this.runningSlots()) {
+      if (found.has(entry.id)) continue;
+      found.set(entry.id, entry.pid);
+    }
+    return found;
+  }
+  // 跑着但不在注册表里的 windows-v1 窗口：并发建窗丢过记录时会留下这种孤儿，
+  // 它们在任务管理器里占着内存，用户却在助手界面里看不到、也关不掉。
+  async orphanWindows() {
+    const registry = await readWindowRegistry(this.store.root);
+    const known = new Set(registry.windows.map((entry) => entry.id));
+    const orphans = [];
+    for (const entry of await this.runningSlots()) {
+      if (entry.slot !== windowsRootName || known.has(entry.id)) continue;
+      if (orphans.some((item) => item.id === entry.id)) continue;
+      orphans.push({ id: entry.id, pid: entry.pid, name: `未登记的窗口 ${entry.id}`, homePath: windowPaths(this.store.root, entry.id).homePath });
+    }
+    return orphans;
   }
   async localRuntimeStatus() {
     const policy = await readExpertPolicy(this.store);
@@ -399,7 +435,24 @@ export class ProductService {
     const data = await this.store.read();
     const table = buildRouterTable(data.routes);
     const registry = await readWindowRegistry(this.store.root);
-    const running = await this.runningWindows();
+    const slots = await this.runningSlots();
+    const running = new Map();
+    for (const entry of slots) {
+      if (running.has(entry.id)) continue;
+      running.set(entry.id, entry.pid);
+    }
+    const known = new Set(registry.windows.map((entry) => entry.id));
+    const orphans = [];
+    for (const entry of slots) {
+      if (entry.slot !== windowsRootName || known.has(entry.id)) continue;
+      if (orphans.some((item) => item.id === entry.id)) continue;
+      orphans.push({
+        id: entry.id,
+        name: `未登记的窗口 ${entry.id}`,
+        pid: entry.pid,
+        homePath: windowPaths(this.store.root, entry.id).homePath,
+      });
+    }
     return {
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
       windows: registry.windows.map((entry) => ({
@@ -412,6 +465,7 @@ export class ProductService {
         pid: running.get(entry.id) || 0,
         homePath: windowPaths(this.store.root, entry.id).homePath,
       })),
+      orphans,
       routerRunning: running.has(legacyWindowID),
       routerRunningInstances: [...running.keys()].sort(),
     };
@@ -481,16 +535,15 @@ export class ProductService {
     return child.pid;
   }
   async createWindow(initial = "") {
-    const registry = await readWindowRegistry(this.store.root);
-    const id = nextWindowID(registry);
-    const window = { id, name: nextWindowName(registry), initialModel: "", createdAt: new Date().toISOString() };
-    await writeWindowRegistry(this.store.root, { ...registry, windows: [...registry.windows, window] });
+    // 编号在锁里分配：两次并发建窗一定拿到 w2 / w3，不会都算出 w2 互相覆盖。
+    const reserved = [...(await this.runningWindows()).keys()];
+    const window = await allocateWindow(this.store.root, { reserved });
+    const id = window.id;
     try {
       return await this.openWindow(id, initial, { reuse: false, fresh: true });
     } catch (error) {
       // 启动失败（网关没起来、Codex 不在等）就把刚建的空窗口撤掉，免得注册表里留下一个打不开的条目。
-      const current = await readWindowRegistry(this.store.root);
-      await writeWindowRegistry(this.store.root, { ...current, windows: current.windows.filter((entry) => entry.id !== id) });
+      await removeWindow(this.store.root, id);
       await fs.rm(windowPaths(this.store.root, id).root, { recursive: true, force: true }).catch(() => {});
       throw error;
     }
@@ -506,17 +559,15 @@ export class ProductService {
         ...summary,
         window: summary.windows.find((item) => item.id === id) ?? null,
         delivered: false,
-        message: `「${entry.name}」已经在运行（PID ${running.get(id)}），本次没有重复启动。要换起始模型请先关闭该窗口再打开。`,
+        message: `「${entry.name}」已经在运行（PID ${running.get(id)}），本次没有重复启动。想同时多开请点「新建窗口」；已经在跑的窗口如果被压住或最小化，用「置前」把它切到最前。`,
       };
     }
     // 首次建立任务库的窗口才补历史；新建窗口按约定留空，需要时再手动导入。
     const importHistory = Boolean(entry.legacy) && !fresh;
     const prepared = await this.prepareWindow(id, initial, { importHistory });
     const pid = await this.spawnWindow(prepared);
-    const updated = (await readWindowRegistry(this.store.root)).windows.map((item) =>
-      item.id === id ? { ...item, initialModel: prepared.chosen.route.id } : item,
-    );
-    await writeWindowRegistry(this.store.root, { ...registry, windows: updated });
+    // 记住起始模型：只改这一个窗口，不动期间新建的其它窗口。
+    await updateWindow(this.store.root, id, { initialModel: prepared.chosen.route.id });
     const summary = await this.switchSummary();
     const importedMessage = prepared.imported?.pendingFirstLaunch
       ? " 首次打开会先建立统一任务库；关闭后再次打开，会自动把官方与 API 会话补进来。"
@@ -532,13 +583,10 @@ export class ProductService {
     };
   }
   async renameWindow(id, name) {
-    const registry = await readWindowRegistry(this.store.root);
-    if (!findWindow(registry, id)) throw new Error("窗口不存在");
     const clean = String(name ?? "").trim().slice(0, 40);
     if (!clean) throw new Error("请输入窗口名称");
     if (/[\u0000-\u001f]/.test(clean)) throw new Error("窗口名称包含控制字符");
-    const windows = registry.windows.map((entry) => (entry.id === id ? { ...entry, name: clean } : entry));
-    await writeWindowRegistry(this.store.root, { ...registry, windows });
+    if (!(await updateWindow(this.store.root, id, { name: clean }))) throw new Error("窗口不存在");
     return { ...(await this.switchSummary()), message: `窗口已重命名为「${clean}」` };
   }
   async closeWindow(id) {
@@ -553,11 +601,35 @@ export class ProductService {
       if (!(await this.runningWindows()).has(id)) break;
     }
     const stillRunning = (await this.runningWindows()).has(id);
+    // 主进程退出后再收尾，免得助手进程被当成「窗口还开着」。
+    if (!stillRunning) await this.sweepWindowHelpers(id);
     return {
       ...(await this.switchSummary()),
       delivered: !stillRunning,
       message: stillRunning ? `已发送关闭请求，但 PID ${pid} 仍在运行，请手动关闭该窗口` : "窗口已关闭；对话和任务库都留在磁盘上，随时可以再打开",
     };
+  }
+  // 关窗后还会剩下 reparent 到 init 的 crashpad 助手进程（命令行里的 --database 指向本窗口的 browser-data/Crashpad）。
+  // 它们不占界面，但每开关一次就留下两个，多开重度使用会越积越多；标记精确到本窗口目录，不会误伤其它窗口。
+  async sweepWindowHelpers(id) {
+    const marker = `--database=${windowPaths(this.store.root, id).userDataPath}/Crashpad`;
+    let stdout = "";
+    try {
+      ({ stdout } = await execFileAsync("/bin/ps", ["-axo", "pid,args"], { maxBuffer: 4 * 1024 * 1024 }));
+    } catch {
+      return 0;
+    }
+    let ended = 0;
+    for (const line of String(stdout).split("\n")) {
+      if (!line.includes(marker)) continue;
+      const pid = Number(line.trim().split(/\s+/)[0]);
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || pid === process.ppid) continue;
+      try {
+        process.kill(pid, "SIGTERM");
+        ended += 1;
+      } catch { /* 已经自己退出了 */ }
+    }
+    return ended;
   }
   async killWindowProcess(pid) {
     const target = Number(pid);
@@ -596,11 +668,39 @@ export class ProductService {
     const registry = await readWindowRegistry(this.store.root);
     if (!findWindow(registry, id)) throw new Error("窗口不存在");
     if ((await this.runningWindows()).has(id)) throw new Error("窗口正在运行，请先关闭再删除");
-    const windows = registry.windows.filter((entry) => entry.id !== id);
-    await writeWindowRegistry(this.store.root, { ...registry, windows });
+    await this.sweepWindowHelpers(id);
+    await removeWindow(this.store.root, id);
     const paths = windowPaths(this.store.root, id);
     await fs.rm(paths.root, { recursive: true, force: true });
     return { ...(await this.switchSummary()), message: "窗口已删除，它自己的任务库和会话副本一并移除；官方库和其它窗口不受影响" };
+  }
+  // 接管在跑但没登记的窗口：并发建窗时代的遗留进程，接管后就能在列表里看到、关闭或打开。
+  async adoptWindows(target = "all") {
+    const orphans = await this.orphanWindows();
+    const wanted = target === "all" || !target ? orphans.map((entry) => entry.id) : [target];
+    const adopted = [];
+    for (const id of wanted) {
+      const orphan = orphans.find((entry) => entry.id === id);
+      if (!orphan) continue;
+      let initialModel = "";
+      try {
+        const config = await fs.readFile(path.join(orphan.homePath, "config.toml"), "utf8");
+        const slug = (config.match(/^\s*model\s*=\s*"([^"]+)"/m) || [])[1] ?? "";
+        const data = await this.store.read();
+        const hit = (data.routes ?? []).find((route) => route.model === slug || route.id === slug);
+        initialModel = hit?.id ?? "";
+      } catch { initialModel = ""; }
+      const result = await registerRunningWindow(this.store.root, id, { initialModel });
+      if (result.added) adopted.push(id);
+    }
+    const summary = await this.switchSummary();
+    return {
+      ...summary,
+      adopted,
+      message: adopted.length
+        ? `已接管 ${adopted.length} 个未登记的窗口（${adopted.join("、")}）；它们本来就开着，现在可以在列表里关闭或重新打开`
+        : "没有发现需要接管的窗口",
+    };
   }
   async switchWindowSources(target = "all") {
     const sources = [];

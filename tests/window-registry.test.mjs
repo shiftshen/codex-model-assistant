@@ -6,10 +6,13 @@ import path from "node:path";
 import { ModelStore } from "../src/model-store.mjs";
 import { ProductService, parseRunningWindows } from "../src/product-service.mjs";
 import {
+  allocateWindow,
   legacyWindowID,
   nextWindowID,
   nextWindowName,
   readWindowRegistry,
+  registryLockPath,
+  updateWindow,
   windowPaths,
   windowsRootName,
   writeWindowRegistry,
@@ -172,13 +175,16 @@ test("运行中的窗口不会被删除，也不会被当成不存在", async (c
   const service = quiet(new ProductService(store));
   service.spawnWindow = async () => 70001;
   service.runningWindows = async () => new Map();
+  service.runningSlots = async () => [];
   await service.createWindow("deepseek-flash");
   service.runningWindows = async () => new Map([["w2", 70001]]);
+  service.runningSlots = async () => [{ slot: windowsRootName, id: "w2", pid: 70001 }];
   await assert.rejects(() => service.deleteWindow("w2"), /请先关闭/);
   const summary = await service.switchSummary();
   assert.equal(summary.windows.find((entry) => entry.id === "w2").running, true);
   assert.equal(summary.windows.find((entry) => entry.id === "w2").pid, 70001);
   assert.equal(summary.routerRunning, false);
+  assert.deepEqual(summary.orphans, []);
 });
 
 test("新建窗口启动失败时不留下打不开的空条目", async (context) => {
@@ -191,4 +197,128 @@ test("新建窗口启动失败时不留下打不开的空条目", async (context
   service.spawnWindow = async () => 80001;
   const created = await service.createWindow("deepseek-flash");
   assert.equal(created.window.id, "w2");
+});
+
+// 回归：并发建窗曾把编号算成同一个，后写的覆盖先写的，另一个 Codex 进程变成界面上看不见的孤儿。
+test("并发建窗：每个请求都拿到独立编号，注册表一个都不丢", async (context) => {
+  const store = await fixture(context);
+  const service = quiet(new ProductService(store));
+  const started = [];
+  service.spawnWindow = async (prepared) => { started.push(prepared.userDataPath); return 90000 + started.length; };
+  service.runningWindows = async () => new Map();
+
+  const results = await Promise.all(Array.from({ length: 8 }, (_, index) => service.createWindow(`model-${index}`)));
+  const ids = results.map((entry) => entry.window.id);
+  assert.equal(new Set(ids).size, ids.length, `编号必须互不相同，实际：${ids.join(",")}`);
+  assert.equal(new Set(started).size, started.length, "每个窗口必须有自己的 browser-data 目录");
+
+  const registry = await readWindowRegistry(store.root);
+  assert.equal(registry.windows.length, 9, "内置窗口 + 8 个新窗口");
+  for (const id of ids) assert.ok(registry.windows.some((entry) => entry.id === id), `${id} 必须留在注册表里`);
+  // 起始模型也要各归各的，不能互相覆盖
+  for (const result of results) {
+    const stored = registry.windows.find((entry) => entry.id === result.window.id);
+    assert.equal(stored.initialModel, result.window.initialModel);
+  }
+});
+
+test("并发建窗会避开还在跑的未登记窗口，不会和它的目录撞车", async (context) => {
+  const store = await fixture(context);
+  const service = quiet(new ProductService(store));
+  service.spawnWindow = async () => 91000;
+  // w2 是并发事故里跑起来、但没登记的孤儿：新窗口必须跳过编号 w2。
+  service.runningWindows = async () => new Map([["w2", 4242]]);
+  const created = await service.createWindow("");
+  assert.equal(created.window.id, "w3");
+  assert.equal(created.window.name, "窗口 3");
+});
+
+test("注册表锁：并发改名不覆盖期间新建的窗口，陈旧锁能自动接管", async (context) => {
+  const store = await fixture(context);
+  const service = quiet(new ProductService(store));
+  service.spawnWindow = async () => 92000;
+  service.runningWindows = async () => new Map();
+  await service.createWindow("");
+  await service.createWindow("");
+
+  // 改名和新窗口同时发生：两个写入都必须落盘。
+  await Promise.all([service.renameWindow("w2", "写代码"), service.createWindow("")]);
+  const registry = await readWindowRegistry(store.root);
+  assert.equal(registry.windows.find((entry) => entry.id === "w2").name, "写代码");
+  assert.equal(registry.windows.length, 4, "并发写入不能丢条目");
+
+  // 陈旧锁（上次异常退出留下的）要被接管，而不是让后续操作永远超时
+  await fs.writeFile(registryLockPath(store.root), "999999 stale\n");
+  const past = new Date(Date.now() - 120000);
+  await fs.utimes(registryLockPath(store.root), past, past);
+  const renamed = await updateWindow(store.root, "w3", { name: "视频" });
+  assert.equal(renamed.name, "视频");
+  await assert.rejects(() => fs.access(registryLockPath(store.root)), /ENOENT/, "锁必须被释放");
+
+  // 新鲜的锁要挡住写入，避免两边同时改
+  await fs.writeFile(registryLockPath(store.root), "1 busy\n");
+  await assert.rejects(() => updateWindow(store.root, "w3", { name: "x" }, { timeoutMs: 150 }), /占用/);
+  assert.equal((await readWindowRegistry(store.root)).windows.find((entry) => entry.id === "w3").name, "视频", "被锁挡住时不能写坏数据");
+  await fs.rm(registryLockPath(store.root), { force: true });
+});
+
+test("陈旧锁要在等待超时之前被接管，建窗不会报「正被占用」", async (context) => {
+  const store = await fixture(context);
+  // 默认参数下才成立：一旦有人把 staleMs 调到大于 timeoutMs，
+  // 持有者异常退出后锁还没到接管时限就先撞上等待上限，用户看到的就是「点了没反应，只能开一个」。
+  await fs.writeFile(registryLockPath(store.root), "424242 crashed\n");
+  const stale = new Date(Date.now() - 6000);
+  await fs.utimes(registryLockPath(store.root), stale, stale);
+  const started = Date.now();
+  const window = await allocateWindow(store.root, {});
+  const elapsed = Date.now() - started;
+  assert.equal(window.id, "w2", "陈旧锁被接管后照常建窗");
+  assert.ok(elapsed < 2000, `接管必须在等待上限之前完成，实际用了 ${elapsed}ms`);
+  await assert.rejects(() => fs.access(registryLockPath(store.root)), /ENOENT/, "接管后锁必须被释放");
+});
+
+test("接管孤儿窗口：注册表补齐后可以在列表里看到并管理", async (context) => {
+  const store = await fixture(context);
+  const service = quiet(new ProductService(store));
+  const orphans = [
+    { slot: windowsRootName, id: "w5", pid: 70001 },
+    { slot: windowsRootName, id: "w6", pid: 70002 },
+    { slot: "continuations-v1", id: "deepseek-flash", pid: 70003 },
+  ];
+  service.runningSlots = async () => orphans;
+  service.runningWindows = async () => new Map(orphans.map((entry) => [entry.id, entry.pid]));
+  // 孤儿窗口自己的 config.toml 决定它打开时用的模型
+  const home = windowPaths(store.root, "w5").homePath;
+  await fs.mkdir(home, { recursive: true, mode: 0o700 });
+  await fs.writeFile(path.join(home, "config.toml"), 'model = "deepseek-flash"\nmodel_provider = "cma_router"\n');
+
+  const before = await service.switchSummary();
+  assert.deepEqual(before.orphans.map((entry) => entry.id), ["w5", "w6"], "旧的单模型窗口不算孤儿");
+  assert.deepEqual(before.windows.map((entry) => entry.id), [legacyWindowID], "孤儿在接管前不在窗口列表里");
+
+  const adopted = await service.adoptWindows("all");
+  assert.deepEqual(adopted.adopted, ["w5", "w6"]);
+  assert.match(adopted.message, /已接管 2 个未登记的窗口/);
+  const after = await service.switchSummary();
+  assert.deepEqual(after.windows.map((entry) => entry.id), [legacyWindowID, "w5", "w6"]);
+  assert.equal(after.windows.find((entry) => entry.id === "w5").running, true);
+  assert.equal(after.windows.find((entry) => entry.id === "w5").pid, 70001);
+  assert.equal(after.windows.find((entry) => entry.id === "w5").initialModel, "deepseek-flash");
+  assert.deepEqual(after.orphans, []);
+
+  // 已登记的窗口不会被重复接管，也不会改名
+  const again = await service.adoptWindows("all");
+  assert.deepEqual(again.adopted, []);
+  assert.equal((await readWindowRegistry(store.root)).windows.length, 3);
+});
+
+test("allocateWindow 在锁内分配编号，连续调用不会重号", async (context) => {
+  const store = await fixture(context);
+  const first = await allocateWindow(store.root, {});
+  const second = await allocateWindow(store.root, {});
+  assert.equal(first.id, "w2");
+  assert.equal(second.id, "w3");
+  assert.equal(first.name, "窗口 2");
+  assert.equal(second.name, "窗口 3");
+  assert.equal((await readWindowRegistry(store.root)).windows.length, 3);
 });
