@@ -10,9 +10,201 @@ struct ModelLibraryView: View {
     @State private var renameTarget: WorkWindow?
     @State private var renameDraft = ""
 
+    @State private var showModels = false
+
+    // 首页回答的是「我有哪些窗口、现在能不能进去」，而不是「我有哪些模型」。
+    // 模型配置是低频动作，收进「模型库」弹窗里改。
     var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            windowBoard
+            Divider()
+            statusBar
+        }
+        .frame(minWidth: 820, minHeight: 580)
+        .sheet(isPresented: $showModels) { modelLibrary }
+        .sheet(item: $editing) { model in ModelEditor(library: library, draft: model, isNew: !library.models.contains(where: { $0.id == model.id })) }
+        .sheet(isPresented: $library.showDiscovery) { discovery }
+        .sheet(isPresented: $library.showDiagnostics) { diagnosticsSheet }
+        .sheet(isPresented: $library.showExpert) { ExpertSettingsView(library: library) }
+        .sheet(item: $renameTarget) { window in renameSheet(window) }
+        .confirmationDialog("确认清理会话副本？", isPresented: $library.showCleanupConfirm, titleVisibility: .visible) {
+            Button("删除并释放空间", role: .destructive) { Task { await library.applyCleanup() } }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(library.cleanupPrompt)
+        }
+        .confirmationDialog("确认删除官方库的已归档会话？", isPresented: $library.showOfficialConfirm, titleVisibility: .visible) {
+            Button("删除，且不可恢复", role: .destructive) { Task { await library.applyOfficialCleanup() } }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(library.officialCleanupPrompt)
+        }
+        // 从 Codex 切回来就自动刷新一次：用户刚在 Codex 顶部换了模型，
+        // 卡片上的「当前模型」必须立刻跟上，否则又变成「我切了但界面没变」。
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await library.openSwitch() }
+        }
+        .task {
+            await library.refresh()
+            await library.openSwitch()
+            // 启动时就把磁盘占用算出来，底部的状态条才有内容。
+            await library.refreshDisk()
+            if library.newWindowModel.isEmpty, let first = library.switchModels.first { library.newWindowModel = first.id }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Codex 模型助手").font(.headline)
+                Text("MODEL ROUTER · \(bundleVersion)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if library.busy { ProgressView().controlSize(.small) }
+            Button { Task { await library.openSwitch() } } label: { Image(systemName: "arrow.clockwise") }
+                .help("刷新窗口状态")
+            Button { showModels = true } label: { Label("模型库（\(library.models.count)）", systemImage: "slider.horizontal.3") }
+                .help("配置模型、检查连接、看诊断——都在这一个弹窗里")
+            Menu {
+                Button("运行诊断") { Task { await library.perform("diagnostics") } }
+                Button("本地优先 / 专家策略") { Task { await library.openExpert() } }
+                Divider()
+                Button("导入模型配置…") { Task { await library.importLibrary() } }
+                Button("导出模型配置…") { Task { await library.exportLibrary() } }
+                Divider()
+                Button("打开数据目录") { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.codex/model-assistant")) }
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuStyle(.borderlessButton).frame(width: 30).help("备份、诊断与专家策略")
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+    }
+
+    // 主区域：一张张窗口卡片，点一下就进去；要再开一个就点「新建窗口」那张虚线卡。
+    private var windowBoard: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Text("窗口").font(.title3.bold())
+                    Text("\(library.windows.count) 个 · 运行中 \(library.runningWindowCount)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(library.runningWindowCount > 0 ? .green : .secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background((library.runningWindowCount > 0 ? Color.green : Color.secondary).opacity(0.12), in: Capsule())
+                    Spacer()
+                    Text("每个窗口就是一个独立 Codex：有自己的任务库，窗口里随时换模型，对话不会丢。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
+                    ForEach(library.windows) { window in windowCard(window) }
+                    newWindowCard
+                }
+                if !library.orphans.isEmpty { orphanRow }
+            }
+            .padding(20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func windowCard(_ window: WorkWindow) -> some View {
+        let running = window.running == true
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Circle().fill(running ? Color.green : Color.secondary.opacity(0.35)).frame(width: 8, height: 8)
+                Text(window.name).font(.system(size: 15, weight: .semibold))
+                if window.legacy == true {
+                    Text("内置").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 2).background(Color.secondary.opacity(0.14), in: Capsule())
+                }
+                Spacer()
+                Menu {
+                    Button("打开（已在跑就切到最前）") { Task { await library.openWindow(window.id) } }.disabled(library.busy)
+                    Button("置前") { Task { await library.bringWindowToFront(window.id) } }.disabled(library.busy || !running)
+                    Button("关闭窗口") { Task { await library.closeWindow(window.id) } }.disabled(library.busy || !running)
+                    Divider()
+                    Button("重命名…") { renameDraft = window.name; renameTarget = window }
+                    Button("用这个窗口的起始模型再开一个") { Task { await library.newWindow(initial: window.initialModel ?? "") } }.disabled(library.busy)
+                    Divider()
+                    Button("删除窗口", role: .destructive) { Task { await library.deleteWindow(window.id) } }
+                        .disabled(window.legacy == true || running)
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).frame(width: 26)
+            }
+            Text(running ? "运行中 · PID \(window.pid ?? 0)" : "未启动")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(running ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("当前模型：\(library.displayName(forModelKey: window.currentModel) ?? "打开后在 Codex 顶部选择")")
+                    .font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Text("启动时：\(library.displayName(forModelKey: window.initialModel) ?? "自动")")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Button(running ? "切到最前" : "打开") { Task { await library.openWindow(window.id) } }
+                    .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
+                if running {
+                    Button("关闭") { Task { await library.closeWindow(window.id) } }.controlSize(.small).disabled(library.busy)
+                }
+                Spacer()
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(running ? Color.green.opacity(0.35) : Color.secondary.opacity(0.15), lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture { Task { await library.openWindow(window.id) } }
+        .help(window.homePath ?? "")
+    }
+
+    private var newWindowCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("新建窗口").font(.system(size: 15, weight: .semibold))
+            Text("再开一个独立 Codex：自己的任务库和运行状态，可以和现有窗口同时干活。新窗口是空的，需要旧对话时用模型库里的导入。")
+                .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("起始模型", selection: $library.newWindowModel) {
+                ForEach(library.switchModels) { entry in Text("\(entry.name) · \(entry.model)").tag(entry.id) }
+            }.labelsHidden().disabled(library.switchModels.isEmpty)
+            Spacer(minLength: 0)
+            Button { Task { await library.newWindow(initial: library.newWindowModel) } } label: {
+                Label("新建窗口", systemImage: "plus").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered).disabled(library.busy || library.switchModels.isEmpty)
+            .help("可选的起始模型 \(library.switchModels.count) 个（官方 ChatGPT 登录和已归档模型不在其中）")
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5, 4])).foregroundStyle(.secondary.opacity(0.35)))
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "internaldrive").foregroundStyle(.secondary).font(.caption)
+            if let disk = library.disk {
+                Text("助手目录 \(humanBytes(disk.totalBytes)) · 可回收 \(humanBytes(disk.reclaimable)) · 系统剩余 \(Int(disk.freeDiskPercent.rounded()))%")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("点「检查占用」算出可回收多少").font(.caption).foregroundStyle(.secondary)
+            }
+            if library.busy { ProgressView().controlSize(.small) }
+            Spacer()
+            Text(library.message).font(.caption).foregroundStyle(library.success == false ? .red : .secondary).lineLimit(1)
+            Button("检查占用") { Task { await library.refreshDisk() } }.controlSize(.small).disabled(library.busy)
+            Button("清理") { library.showCleanupConfirm = true }.controlSize(.small)
+                .disabled(library.busy || (library.disk?.reclaimable ?? 0) <= 0)
+                .help("删除各窗口里重复的会话副本与浏览器缓存；官方库和窗口独有对话不动")
+        }
+        .padding(.horizontal, 18).padding(.vertical, 10)
+    }
+
+    // 模型配置收进一个弹窗：主界面不再被模型列表挤掉一半。
+    private var modelLibrary: some View {
         HStack(spacing: 0) {
-            sidebar
+            modelSidebar
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -27,7 +219,8 @@ struct ModelLibraryView: View {
                         Button("打开数据目录") { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.codex/model-assistant")) }
                     } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).frame(width: 28).help("备份与诊断")
-                }.padding(24).disabled(library.busy)
+                    Button("完成") { showModels = false }.keyboardShortcut(.cancelAction)
+                }.padding(20).disabled(library.busy)
                 Divider()
                 if library.diskNeedsAttention, let disk = library.disk {
                     HStack(spacing: 10) {
@@ -45,153 +238,42 @@ struct ModelLibraryView: View {
                     .background(Color.orange.opacity(0.1))
                     Divider()
                 }
-                if let selected = library.selected { detail(selected) }
-                else { ContentUnavailableView("还没有模型", systemImage: "square.stack.3d.up", description: Text("点击添加模型，选择供应商模板开始配置。")) }
+                if let selected = library.selected { modelDetail(selected) }
+                else { ContentUnavailableView("还没有模型", systemImage: "square.stack.3d.up", description: Text("点「添加模型」，选择供应商模板开始配置。")) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 920, minHeight: 660)
-        .sheet(item: $editing) { model in ModelEditor(library: library, draft: model, isNew: !library.models.contains(where: { $0.id == model.id })) }
-        .sheet(isPresented: $library.showDiscovery) { discovery }
-        .sheet(isPresented: $library.showDiagnostics) {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("运行诊断").font(.title2.bold())
-                Text(library.diagnostics).font(.body).textSelection(.enabled).lineSpacing(8)
-                HStack {
-                    Button("修复工作窗口") { Task { await library.callRepairAndRefreshDiagnostics() } }.disabled(library.busy)
-                    Spacer()
-                    Button("完成") { library.showDiagnostics = false }.keyboardShortcut(.defaultAction)
-                }
-            }.padding(28).frame(width: 600)
-        }
-        .sheet(isPresented: $library.showExpert) { ExpertSettingsView(library: library) }
-        .sheet(isPresented: $library.showSwitch) { switchWindow }
-        .task {
-            await library.refresh()
-            // 启动时就把磁盘占用算出来，超阈值时下面的提示条才有内容。
-            await library.refreshDisk()
-        }
+        .frame(width: 960, height: 640)
     }
 
-    private var switchWindow: some View {
+    private func renameSheet(_ window: WorkWindow) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                Image(systemName: "macwindow.on.rectangle").font(.title2).foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("窗口管理").font(.title2.bold())
-                    Text("每个窗口都是独立的 Codex 窗口，可以同时开多个；每个窗口里都能在 Codex 顶部直接换模型，对话不会丢。").font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("\(library.windows.count) 个窗口 · 运行中 \(library.runningWindowCount)")
-                    .font(.caption.weight(.semibold)).foregroundStyle(library.runningWindowCount > 0 ? .green : .secondary)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background((library.runningWindowCount > 0 ? Color.green : Color.secondary).opacity(0.12), in: Capsule())
-            }
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(library.windows) { window in windowRow(window) }
-                    if !library.orphans.isEmpty { orphanRow }
-                }
-            }
-            .frame(minHeight: 190)
-            Divider()
-            VStack(alignment: .leading, spacing: 8) {
-                Text("新建窗口").font(.callout.weight(.semibold))
-                Text("新窗口按约定是空的（需要旧对话时用下面的导入）。起始模型只是打开时的默认值；窗口会记住它，之后在 Codex 里随时换。")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    Picker("起始模型", selection: $library.newWindowModel) {
-                        ForEach(library.switchModels) { entry in Text("\(entry.name) · \(entry.model)").tag(entry.id) }
-                    }.frame(maxWidth: 380)
-                    Button("新建窗口") { Task { await library.newWindow(initial: library.newWindowModel) } }
-                        .buttonStyle(.borderedProminent).disabled(library.busy || library.switchModels.isEmpty)
-                    Spacer()
-                }
-                Text("可选 \(library.switchModels.count) 个模型（官方 ChatGPT 登录和已归档模型不在这里）。")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("把已有会话带进来").font(.callout.weight(.semibold))
-                Text("先打开过窗口 1（内置），让 Codex 建好任务库并退出，再在这里导入。导入只新增副本，不会改动官方或其它模型窗口的会话。")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    Button("导入官方会话") { Task { await library.importHistory("shared") } }.disabled(library.busy)
-                    Button("导入全部（官方 + 各模型窗口）") { Task { await library.importHistory("all") } }.disabled(library.busy)
-                    Button("修复工作窗口") { Task { await library.perform("repair-work-window") } }.disabled(library.busy)
-                }
-            }
-            if library.busy { ProgressView().controlSize(.small) }
+            Text("重命名窗口").font(.title3.bold())
+            TextField("窗口名称", text: $renameDraft).textFieldStyle(.roundedBorder).frame(width: 320)
             HStack {
-                Text(library.message).font(.caption).foregroundStyle(library.success == false ? .red : .secondary).lineLimit(3)
                 Spacer()
-                Button("完成") { library.showSwitch = false }.keyboardShortcut(.cancelAction)
-                Button("刷新状态") { Task { await library.openSwitch() } }.disabled(library.busy)
+                Button("取消") { renameTarget = nil }.keyboardShortcut(.cancelAction)
+                Button("保存") {
+                    let target = window.id
+                    let name = renameDraft
+                    renameTarget = nil
+                    Task { await library.renameWindow(target, to: name) }
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
-        }
-        .padding(24).frame(width: 700, height: 700)
-        .sheet(item: $renameTarget) { window in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("重命名窗口").font(.title3.bold())
-                TextField("窗口名称", text: $renameDraft).textFieldStyle(.roundedBorder).frame(width: 320)
-                HStack {
-                    Spacer()
-                    Button("取消") { renameTarget = nil }.keyboardShortcut(.cancelAction)
-                    Button("保存") {
-                        let target = window.id
-                        let name = renameDraft
-                        renameTarget = nil
-                        Task { await library.renameWindow(target, to: name) }
-                    }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-                }
-            }.padding(24)
-        }
+        }.padding(24)
     }
 
-    private func windowRow(_ window: WorkWindow) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(window.name).font(.system(size: 13, weight: .semibold))
-                    if window.legacy == true {
-                        Text("内置").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                            .padding(.horizontal, 6).padding(.vertical, 2).background(Color.secondary.opacity(0.14), in: Capsule())
-                    }
-                    if window.running == true {
-                        Text("运行中 · PID \(window.pid ?? 0)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
-                    }
-                }
-                if let current = library.displayName(forModelKey: window.currentModel) {
-                    Text("当前模型：\(current)").font(.system(size: 11, weight: .semibold))
-                } else {
-                    Text("当前模型：打开后在 Codex 顶部选择").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                Text("启动时模型：\(library.displayName(forModelKey: window.initialModel) ?? "自动")（只是打开时的默认值，之后在 Codex 里换模型不影响这一项）")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(2)
-                Text(window.homePath ?? "").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
-                    .lineLimit(1).truncationMode(.middle)
+    private var diagnosticsSheet: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("运行诊断").font(.title2.bold())
+            Text(library.diagnostics).font(.body).textSelection(.enabled).lineSpacing(8)
+            HStack {
+                Button("修复工作窗口") { Task { await library.callRepairAndRefreshDiagnostics() } }.disabled(library.busy)
+                Spacer()
+                Button("完成") { library.showDiagnostics = false }.keyboardShortcut(.defaultAction)
             }
-            Spacer()
-            if window.running == true {
-                Button("置前") { Task { await library.bringWindowToFront(window.id) } }
-                    .disabled(library.busy)
-                    .help("这个窗口开着但被压住/最小化时，用它切到最前")
-                Button("关闭") { Task { await library.closeWindow(window.id) } }.disabled(library.busy)
-            } else {
-                Button("打开") { Task { await library.openWindow(window.id) } }
-                    .disabled(library.busy)
-            }
-            Menu {
-                Button("用这个窗口的起始模型再开一个") { Task { await library.newWindow(initial: window.initialModel ?? "") } }
-                    .disabled(library.busy)
-                Button("重命名…") { renameDraft = window.name; renameTarget = window }
-                Divider()
-                Button("删除窗口", role: .destructive) { Task { await library.deleteWindow(window.id) } }
-                    .disabled(window.legacy == true || window.running == true)
-            } label: { Image(systemName: "ellipsis.circle") }
-            .menuStyle(.borderlessButton).frame(width: 28)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 9)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        }.padding(28).frame(width: 600)
     }
+
 
     // 并发建窗丢过记录时，Codex 进程还在跑但注册表里没有它：这里一次性接管回来。
     private var orphanRow: some View {
@@ -211,7 +293,7 @@ struct ModelLibraryView: View {
         .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var sidebar: some View {
+    private var modelSidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
@@ -260,12 +342,7 @@ struct ModelLibraryView: View {
             }
             Divider()
             diskSection
-            Button { Task { await library.newWindow(initial: library.newWindowModel) } } label: { Label("新建可切换窗口", systemImage: "macwindow.badge.plus").frame(maxWidth: .infinity) }
-                .buttonStyle(.borderedProminent).disabled(library.busy || library.switchModels.isEmpty)
-                .help("再开一个独立的 Codex 窗口：它有自己的任务库和运行状态，可以和现有窗口同时干活，窗口里随时换模型")
-            Button { Task { await library.openSwitch() } } label: { Label("窗口管理（\(library.windows.count)）", systemImage: "macwindow.on.rectangle").frame(maxWidth: .infinity) }
-                .buttonStyle(.bordered).disabled(library.busy || library.switchModels.isEmpty)
-                .help("打开、关闭、重命名、删除窗口，也可以在这里新建窗口")
+            // 窗口不在这个弹窗里管：主界面就是窗口面板，这里只管模型配置。
             Button { Task { await library.openExpert() } } label: { Label("本地优先 / 专家策略", systemImage: "person.crop.circle.badge.checkmark").frame(maxWidth: .infinity) }
                 .disabled(library.busy)
             Button { editing = ManagedModel.new() } label: { Label("添加模型", systemImage: "plus").frame(maxWidth: .infinity) }
@@ -343,21 +420,9 @@ struct ModelLibraryView: View {
                 .help("只删官方库里【已归档】的会话，原件不可恢复；未归档的一条都不动")
             }
         }
-        .confirmationDialog("确认清理会话副本？", isPresented: $library.showCleanupConfirm, titleVisibility: .visible) {
-            Button("删除并释放空间", role: .destructive) { Task { await library.applyCleanup() } }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text(library.cleanupPrompt)
-        }
-        .confirmationDialog("确认删除官方库的已归档会话？", isPresented: $library.showOfficialConfirm, titleVisibility: .visible) {
-            Button("删除，且不可恢复", role: .destructive) { Task { await library.applyOfficialCleanup() } }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text(library.officialCleanupPrompt)
-        }
     }
 
-    private func detail(_ model: ManagedModel) -> some View {
+    private func modelDetail(_ model: ManagedModel) -> some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -473,7 +538,7 @@ struct CodexModelAssistantApp: App {
 
     var body: some Scene {
         WindowGroup { ModelLibraryView() }
-            .defaultSize(width: 1050, height: 730)
+            .defaultSize(width: 1000, height: 700)
             .commands { CommandGroup(replacing: .newItem) { } }
     }
 }
