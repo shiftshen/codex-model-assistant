@@ -74,7 +74,7 @@ function itemKind(item) {
 
 // 切点必须落在「一条普通用户消息」上：往前挪会把工具调用和它的输出拆开，
 // 供应商会因为「工具结果找不到对应的调用」直接 400。
-export function safeSplitIndex(items, keepBudgetBytes) {
+export function safeSplitIndex(items, keepBudgetBytes, options = {}) {
   if (!Array.isArray(items) || items.length < 4) return 0;
   let budget = 0;
   let split = items.length;
@@ -83,15 +83,48 @@ export function safeSplitIndex(items, keepBudgetBytes) {
     if (budget >= keepBudgetBytes) { split = index; break; }
   }
   if (split >= items.length) return 0;
-  // 从候选点往后找最近的用户消息，保证尾巴从「用户提问」开始。
-  let snapped = split;
-  while (snapped < items.length && itemKind(items[snapped]) !== "message:user") snapped += 1;
-  if (snapped >= items.length || snapped === 0) return 0;
-  // 尾巴开头不能是「工具输出」：那说明它的调用被留在摘要里了。
-  let head = snapped;
-  while (head < items.length && toolOutputKinds.has(itemKind(items[head]))) head += 1;
-  if (head >= items.length) return 0;
-  return head;
+  // 尾巴开头不能是「工具输出」：那说明它的调用被留在摘要里了，供应商会直接 400。
+  const cleanStart = (index) => (index > 0 && index < items.length && !toolOutputKinds.has(itemKind(items[index])) ? index : 0);
+  // 首选：落在一条普通用户消息上，尾巴从「用户提问」开始，接续起来最自然。
+  for (let index = split; index < items.length; index += 1) {
+    if (itemKind(items[index]) !== "message:user") continue;
+    const ok = cleanStart(index);
+    if (ok) return ok;
+  }
+  if (!options.force) return 0;
+  // 兜底：整段历史都是工具往返、一条用户消息都找不到时，也要能切。
+  // 压不动就等于把会话卡死在这里，而那正是用户最不想要的。
+  for (let index = split; index < items.length; index += 1) {
+    const ok = cleanStart(index);
+    if (ok) return ok;
+  }
+  return 0;
+}
+
+// 最后一道保险：会话真的装不下、又连一条可切的边界都找不到时，
+// 把「较早的工具输出」原地缩短——调用和返回的对应关系完整保留，
+// 所以供应商不会挑出「工具结果找不到调用」这种 400，用户也不会看到对话被掐断。
+export function trimOldToolOutputs(payload, targetTokens, options = {}) {
+  const items = payload?.input;
+  if (!Array.isArray(items)) return null;
+  const perToken = Number(options.bytesPerToken) > 0 ? Number(options.bytesPerToken) : bytesPerToken;
+  const targetBytes = Math.max(4096, Math.floor(Number(targetTokens) * perToken));
+  const usage = contentUsage(payload);
+  if (!usage || usage.bytes <= targetBytes) return null;
+  let changed = 0;
+  const next = items.map((item) => {
+    if (usage.bytes <= targetBytes) return item;
+    if (!toolOutputKinds.has(itemKind(item))) return item;
+    const text = typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? "");
+    if (text.length < 400) return item;
+    const kept = text.slice(-Math.min(1200, Math.max(200, Math.floor(text.length * 0.1))));
+    const replacement = `[较早的工具输出已省略：原文 ${text.length} 字符，只保留结尾一段]\n${kept}`;
+    usage.bytes -= utf8Bytes(text) - utf8Bytes(replacement);
+    changed += 1;
+    return { ...item, output: replacement };
+  });
+  if (!changed) return null;
+  return { input: next, note: `较早的 ${changed} 个工具输出已缩短（调用与返回仍然成对保留）` };
 }
 
 export function transcriptOf(headItems, limitChars = 400000) {

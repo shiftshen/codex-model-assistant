@@ -13,7 +13,9 @@ import {
   safeSplitIndex,
   summaryRequest,
   transcriptOf,
+  trimOldToolOutputs,
 } from "../src/context-compaction.mjs";
+import { contextWindowFromMessage, resolveContextWindow, defaultContextWindow } from "../src/model-windows.mjs";
 
 const user = (text) => ({ role: "user", content: [{ type: "input_text", text }] });
 const assistant = (text) => ({ role: "assistant", content: [{ type: "input_text", text }] });
@@ -136,4 +138,89 @@ test("切换模型导致超窗时，网关先压缩再继续，而不是报错",
   assert.equal(seen[1].isSummary, false);
   assert.ok(seen[1].size < sentBytes, `正式请求应比原始请求小：${seen[1].size} < ${sentBytes}`);
   assert.ok(sentBytes - seen[1].size > 1024 * 1024, `压缩应显著减小请求体：${sentBytes} → ${seen[1].size}`);
+});
+
+
+test("窗口不写死：按模型匹配真实值，查不到才用 512K 兜底", () => {
+  // 官方模型：实测过 272K，任何占位值都盖不过这个事实
+  assert.equal(resolveContextWindow({ model: "gpt-6-astra", contextWindow: 128000 }), 272000);
+  assert.equal(resolveContextWindow({ model: "gpt-5.6-sol", contextWindow: 200000 }), 272000);
+  // 用户自己填的非占位值优先——128K 对不少模型确实是正确答案
+  assert.equal(resolveContextWindow({ model: "agnes-2.5-flash", contextWindow: 128000 }), 128000);
+  assert.equal(resolveContextWindow({ model: "deepseek-flash", contextWindow: 1000000 }), 1000000);
+  // 旧占位值会被表里的公开值顶掉
+  assert.equal(resolveContextWindow({ model: "claude-sonnet-4-6", contextWindow: 128000 }), 200000);
+  // 查不到就 512K，而不是旧的 128K
+  assert.equal(resolveContextWindow({ model: "谁都不认识的模型", contextWindow: 0 }), defaultContextWindow);
+  assert.equal(resolveContextWindow({ model: "", contextWindow: undefined }), 512000);
+});
+
+test("供应商报错里的真实上限能被读出来，用来纠正窗口", () => {
+  assert.equal(contextWindowFromMessage("This model's maximum context length is 131072 tokens."), 131072);
+  assert.equal(contextWindowFromMessage("context length of 65536"), 65536);
+  assert.equal(contextWindowFromMessage("context_window 200000 exceeded"), 200000);
+  assert.equal(contextWindowFromMessage("额度不足"), 0);
+  assert.equal(contextWindowFromMessage("maximum context length is 12"), 0, "太小的数字不是窗口");
+});
+
+test("整段历史都是工具往返时也要能压缩，不能把会话卡死", () => {
+  const items = [];
+  for (let index = 0; index < 20; index += 1) {
+    items.push({ type: "function_call", name: "exec", call_id: `c${index}`, arguments: "{}" });
+    items.push({ type: "function_call_output", call_id: `c${index}`, output: "y".repeat(4000) });
+  }
+  assert.equal(safeSplitIndex(items, 20000), 0, "默认策略下没有安全的用户消息切点");
+  const forced = safeSplitIndex(items, 20000, { force: true });
+  assert.ok(forced > 0, "强制模式下必须能切");
+  assert.ok(!["function_call_output", "custom_tool_call_output"].includes(items[forced].type), "尾巴不能以工具输出开头");
+});
+
+test("压不动时缩短较早的工具输出，调用与返回仍然成对", () => {
+  const items = [];
+  for (let index = 0; index < 10; index += 1) {
+    items.push({ role: "user", content: [{ type: "input_text", text: `第 ${index} 轮` }] });
+    items.push({ type: "function_call", name: "exec", call_id: `c${index}`, arguments: "{}" });
+    items.push({ type: "function_call_output", call_id: `c${index}`, output: "y".repeat(20000) });
+  }
+  const payload = { input: items, max_output_tokens: 100 };
+  const before = estimateTokens(payload, 0);
+  const trimmed = trimOldToolOutputs(payload, 20000);
+  assert.ok(trimmed, "应该能缩");
+  assert.equal(trimmed.input.length, items.length, "条目数量不变");
+  const after = estimateTokens({ input: trimmed.input, max_output_tokens: 100 }, 0);
+  assert.ok(after < before, `应该变小：${before} → ${after}`);
+  const calls = new Set(trimmed.input.filter((item) => item.type === "function_call").map((item) => item.call_id));
+  for (const item of trimmed.input.filter((entry) => entry.type === "function_call_output")) {
+    assert.ok(calls.has(item.call_id), "工具返回不能悬空");
+  }
+});
+
+test("要压缩的流式请求先发心跳注释，Codex 不会以为卡死而超时", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cma-beat-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new ModelStore(root);
+  const upstreamURL = await listen(http.createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ choices: [{ message: { content: /上下文压缩/.test(body) ? "摘要" : "MODEL_ASSISTANT_OK" } }], usage: {} }));
+    });
+  }), context);
+  await store.read();
+  await store.save({ id: "beat-ctx", name: "心跳窗口", endpoint: upstreamURL, protocol: "chat", model: "beat-ctx", contextWindow: 100000, credentialID: "beat-ctx" }, 1, "k1");
+  const gateway = await listen(createGateway(store), context);
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
+  const history = [];
+  for (let index = 0; index < 20; index += 1) {
+    history.push(user(`第 ${index} 轮：${"x".repeat(20000)}`));
+    history.push(assistant(`第 ${index} 轮完成`));
+  }
+  const response = await fetch(`${gateway}/router/v1/responses`, {
+    method: "POST", headers, body: JSON.stringify({ model: "beat-ctx", input: history, stream: true, max_output_tokens: 200 }),
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200);
+  assert.ok(text.startsWith(": compacting"), `第一段必须是压缩心跳而不是空白：${JSON.stringify(text.slice(0, 40))}`);
+  assert.match(text, /MODEL_ASSISTANT_OK/);
 });

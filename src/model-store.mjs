@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID, randomBytes } from "node:crypto";
 import { templates } from "./provider-templates.mjs";
+import { resolveContextWindow, usableWindow } from "./model-windows.mjs";
 
 export const defaultRoot = path.join(os.homedir(), ".codex/model-assistant");
 export const validID = (id) => typeof id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(id);
@@ -77,7 +78,15 @@ export function validateRoute(input) {
   // 主模型失败（额度、限流、服务异常）时改用的备用条目，可为空。
   route.fallback = route.protocol === "oauth" ? "" : String(route.fallback || "").trim();
   if (route.fallback && (!validID(route.fallback) || route.fallback === route.id)) throw new Error("备用模型填写不正确");
-  route.contextWindow = Number(input.contextWindow ?? 128000);
+  // 没填（或填 0）= 自动：按模型名匹配真实窗口，查不到就 512K 兜底。
+  // 填了具体数字就按填的来，但越界要拦住，不能悄悄换成兜底值。
+  const suppliedWindow = input.contextWindow;
+  if (suppliedWindow === undefined || suppliedWindow === null || suppliedWindow === "" || Number(suppliedWindow) === 0) {
+    route.contextWindow = resolveContextWindow({ model: route.model, contextWindow: 0 });
+  } else {
+    route.contextWindow = usableWindow(suppliedWindow);
+    if (!route.contextWindow) throw new Error("上下文长度应为 4096–2000000（留空表示按模型自动匹配）");
+  }
   if (!Number.isInteger(route.contextWindow) || route.contextWindow < 4096 || route.contextWindow > 2000000) throw new Error("上下文长度应为 4096–2000000");
   return route;
 }

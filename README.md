@@ -59,6 +59,7 @@ zsh scripts/package-release.sh
 - `src/disk-cleanup.mjs`：磁盘治理——副本判定（以官方库为权威）、浏览器缓存白名单、清理计划与执行、审计清单、启动前单窗口自动清理。
 - `src/disk-policy.mjs`：磁盘策略（启动前自动清理 / 清缓存两个开关），带类型校验与版本递增。
 - `src/model-gateway.mjs`、`src/protocol-adapter.mjs`：鉴权网关和协议转换。
+- `src/model-windows.mjs`：上下文窗口不写死。按模型名匹配真实窗口（官方模型 272K、Gemini 1M、Claude 200K…），用户自己填的非占位值优先，查不到用 512K 兜底；供应商报错里写着的真实上限会被读出来记回条目。
 - `src/context-compaction.mjs`：上下文估算与压缩。会话比模型窗口装得下时，网关静默压缩最早的部分再继续，绝不返回「超过上下文上限」把对话掐断；供应商自己报超限时也补一次压缩重试。估算是按内容算的——文本按字节折算，图片按张计价，`base64` 截图不会被当成十几万 token。
 - `src/provider-templates.mjs`：可维护的供应商目录。
 - `tests/product.test.mjs`、`tests/router.test.mjs`、`tests/session-transfer.test.mjs`、`tests/window-registry.test.mjs`、`tests/gateway-build.test.mjs`、`tests/disk-usage.test.mjs`：产品回归、可切换窗口、项目分组迁移、多窗口、网关指纹，以及磁盘治理（副本判定、缓存白名单、运行中窗口跳过、启动前自动清理、策略读写与幂等）。

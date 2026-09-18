@@ -448,8 +448,12 @@ test("模型目录把压缩参数给对，让 Codex 自己压缩", async (contex
   assert.equal(entry.context_window, 1000000);
   assert.equal(entry.effective_context_window_percent, 95, "对齐官方模型的 95%");
   assert.equal(entry.auto_compact_token_limit, 950000, "压缩阈值要显式、且留出摘要空间");
-  // 不该出现「窗口未设就当成无限」的情况：没配的按 128K 兜底，压缩阈值随之变小
+  // 不该出现「窗口未设就当成无限」的情况：没配的按模型匹配，查不到用 512K 兜底
   const fallback = modelInfo({ id: "x", name: "X", vendor: "V", model: "x", contextWindow: 0 }, "x");
-  assert.equal(fallback.context_window, 128000);
-  assert.equal(fallback.auto_compact_token_limit, 121600);
+  assert.equal(fallback.context_window, 512000);
+  assert.equal(fallback.auto_compact_token_limit, 486400);
+  // 官方模型要用实测到的真实窗口，而不是旧的 128K 占位值
+  const official = modelInfo({ id: "official", name: "官方", vendor: "OpenAI", model: "gpt-6-astra", contextWindow: 128000 }, "gpt-6-astra");
+  assert.equal(official.context_window, 272000);
+  assert.equal(official.auto_compact_token_limit, 258400);
 });

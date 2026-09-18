@@ -12,6 +12,7 @@ import { localCallers, readExpertPolicy } from "./expert-policy.mjs";
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
 import { cleanupPlan, cleanupWindowOnLaunch, diskUsage } from "./disk-cleanup.mjs";
 import { readDiskPolicy } from "./disk-policy.mjs";
+import { resolveContextWindow } from "./model-windows.mjs";
 import { buildRouterTable, modelInfo, routerCatalog, routerID, routerProviderID } from "./router.mjs";
 import {
   allocateWindow,
@@ -545,7 +546,26 @@ export class ProductService {
   // 把模型目录参数同步到每个窗口。目录只在开窗时生成，所以升级了参数（比如 Codex 自己的压缩阈值）
   // 之后，老窗口不会自动生效；这条命令负责补齐，不必逼用户关掉正在用的窗口。
   // 只写我们自己生成的 model-catalog.json，不碰任务库、不碰会话。
+  // 把「按模型匹配出来的窗口」写回条目本身。不写回的话，目录里的数字是对的，
+  // 但界面上显示的仍然是旧占位值（比如官方模型挂着 128K），看着就像没改。
+  // 只有当解析结果确实不同才动，用户自己填的非占位值不会被覆盖。
+  async syncContextWindows() {
+    const changed = [];
+    const before = await this.store.read();
+    for (const route of before.routes) {
+      const wanted = resolveContextWindow(route);
+      if (wanted === Number(route.contextWindow)) continue;
+      const current = await this.store.read();
+      const live = current.routes.find((entry) => entry.id === route.id);
+      if (!live) continue;
+      await this.store.save({ ...live, contextWindow: wanted }, current.revision);
+      changed.push({ id: route.id, from: Number(live.contextWindow), to: wanted });
+    }
+    return changed;
+  }
+
   async refreshCatalogs() {
+    const repaired = await this.syncContextWindows();
     const data = await this.store.read();
     const table = buildRouterTable(data.routes);
     const targets = [{ id: legacyWindowID, home: windowPaths(this.store.root, legacyWindowID).homePath }];
@@ -562,10 +582,14 @@ export class ProductService {
       await atomicJSON(path.join(target.home, "model-catalog.json"), routerCatalog(table, localCallers));
       updated.push({ id: target.id, running: running.has(target.id), models: table.length });
     }
+    const repairNote = repaired.length
+      ? `；顺手把 ${repaired.length} 个模型的上下文长度改成按模型匹配的值（${repaired.map((entry) => `${entry.id} ${entry.from}→${entry.to}`).join("、")}）`
+      : "";
     return {
       updated,
       skipped,
-      message: `已把模型目录同步到 ${updated.length} 个窗口（其中 ${updated.filter((entry) => entry.running).length} 个正在运行，下次开新对话时生效）`,
+      repaired,
+      message: `已把模型目录同步到 ${updated.length} 个窗口（其中 ${updated.filter((entry) => entry.running).length} 个正在运行，下次开新对话时生效）${repairNote}`,
     };
   }
   async prepareWindow(id, initial = "", { importHistory = false, model = "" } = {}) {

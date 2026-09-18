@@ -8,6 +8,7 @@ import { readExpertPolicy, saveExpertPolicy } from "./expert-policy.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
 import { applyCleanup, applyOfficialArchived, cleanupPlan, describePlan, diskUsage, officialArchivedPlan } from "./disk-cleanup.mjs";
 import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
+import { resolveContextWindow } from "./model-windows.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -193,7 +194,7 @@ async function main() {
       const routeID = `official-${model.replace(/[^a-z0-9]+/g, "-")}`;
       const data = await store.read();
       const existing = data.routes.find((entry) => entry.id === routeID);
-      await store.save({ ...(existing || {}), id: routeID, name, vendor: "OpenAI（官方登录）", protocol: "chatgpt", model, hidden: true, archived: false, contextWindow: existing?.contextWindow ?? 200000, fallback: existing?.fallback ?? "" }, data.revision);
+      await store.save({ ...(existing || {}), id: routeID, name, vendor: "OpenAI（官方登录）", protocol: "chatgpt", model, hidden: true, archived: false, contextWindow: existing?.contextWindow || resolveContextWindow({ model }), fallback: existing?.fallback ?? "" }, data.revision);
     }
     return { ...(await store.publicData()), message: `官方模型已加入工作窗口（默认隐藏）：${catalog.map((entry) => entry[1]).join("、")}` };
   }

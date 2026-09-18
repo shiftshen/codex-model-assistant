@@ -1,4 +1,5 @@
 import { localAgentInstructions } from "./local-agent-instructions.mjs";
+import { resolveContextWindow } from "./model-windows.mjs";
 
 export const routerID = "router";
 export const routerProviderID = "cma_router";
@@ -47,7 +48,7 @@ export function routerTableEntry(table, slug) {
 }
 
 export function modelInfo(route, slug, baseInstructions = "") {
-  const window = Number(route.contextWindow) > 0 ? Number(route.contextWindow) : 128000;
+  const window = resolveContextWindow(route);
   return {
     slug,
     display_name: route.name,

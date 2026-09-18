@@ -20,7 +20,9 @@ import {
   safeSplitIndex,
   summaryRequest,
   transcriptOf,
+  trimOldToolOutputs,
 } from "./context-compaction.mjs";
+import { contextWindowFromMessage, resolveContextWindow } from "./model-windows.mjs";
 export { estimateTokens };
 
 export const gatewayPort = 18793;
@@ -151,7 +153,7 @@ export function failureCode(status, detail) {
 // 官方模型按 95% 算，第三方引擎很难吃满标称窗口，这里按 90% 算——宁可早一点压缩，
 // 也不要把请求发出去、等供应商报 400。
 export function contextBudget(route) {
-  const window = Number(route?.contextWindow) || 0;
+  const window = resolveContextWindow(route);
   return window > 0 ? Math.floor(window * 0.9) : 0;
 }
 
@@ -164,11 +166,11 @@ export function isContextOverflow(error) {
 // 压缩：把较早的记录换成摘要，保留最近一段完整对话。
 // 保留量取窗口的 45%——留出输出空间，也让摘要本身有地方放。
 // 返回值里的 note 会拼进用户可见的说明，让用户知道发生了什么，而不是悄悄改了他的历史。
-export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45 }) {
+export async function compactForWindow({ store, route, payload, limit, signal, keepRatio = 0.45, force = false }) {
   const items = payload?.input;
   if (!Array.isArray(items) || items.length < 6) return null;
   const keepBudgetBytes = Math.max(64 * 1024, Math.floor(limit * keepRatio) * 3.2);
-  const split = safeSplitIndex(items, keepBudgetBytes);
+  const split = safeSplitIndex(items, keepBudgetBytes, { force });
   if (!split) return null;
   const head = items.slice(0, split);
   const tail = items.slice(split);
@@ -211,11 +213,11 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
 // 优先用目标模型自己（不额外花钱、不跨供应商）；它装不下摘要请求时，
 // 退而用本机窗口最大的那个条目——总比摘要失败、退化成「列出被裁掉的用户消息」好。
 export async function pickSummarizer(store, route, neededTokens) {
-  if (Number(route.contextWindow) >= neededTokens) return route;
+  if (resolveContextWindow(route) >= neededTokens) return route;
   const data = await store.read();
   const candidates = data.routes
-    .filter((entry) => !entry.archived && entry.protocol !== "oauth" && entry.model && Number(entry.contextWindow) > 0)
-    .sort((left, right) => Number(right.contextWindow) - Number(left.contextWindow));
+    .filter((entry) => !entry.archived && entry.protocol !== "oauth" && entry.model)
+    .sort((left, right) => resolveContextWindow(right) - resolveContextWindow(left));
   return candidates[0] ?? route;
 }
 
@@ -304,6 +306,19 @@ export function failureEvents(error, message) {
     { type: "response.created", response: { ...failed, status: "in_progress" } },
     { type: "response.failed", response: failed },
   ].map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join("");
+}
+
+// 把供应商报错里的真实上限写回条目。只改这一个数字，不动用户其他配置。
+async function rememberContextWindow(store, route, detail) {
+  const found = contextWindowFromMessage(detail);
+  if (!found) return 0;
+  try {
+    const data = await store.read();
+    const current = data.routes.find((entry) => entry.id === route.id);
+    if (!current || Number(current.contextWindow) === found) return 0;
+    await store.save({ ...current, contextWindow: found }, data.revision);
+    return found;
+  } catch { return 0; }
 }
 
 async function rememberProtocol(store, route, protocol) {
@@ -403,23 +418,43 @@ export function createGateway(store = new ModelStore(), options = {}) {
       // context_length_exceeded 时它也只把这一轮标记为失败，不会自己压缩重试。
       // 用户要的是「接着说」，所以压缩这件事得有人替它做，而且不能留下痕迹。
       const budget = contextBudget(route);
-      if (budget > 0 && estimateTokens(payload, payloadBytes) > budget) {
-        const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal });
-        if (compacted) {
+      let estimate = estimateTokens(payload, payloadBytes);
+      if (budget > 0 && estimate > budget) {
+        // 压缩要花时间（摘要模型可能跑十几秒）。先把响应头和一行注释写出去，
+        // 让 Codex 知道连接还活着——否则它会以为卡死，弹「正在重新连接」，甚至直接超时断开。
+        if (payload.stream && !response.headersSent) {
+          response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+          sseStream = true;
+          response.write(": compacting\n\n");
+          heartbeat = setInterval(() => response.write(": waiting\n\n"), 5000);
+        }
+        // 一轮压缩通常够；不够就再压一轮（最多三轮），实在压不下去才交给供应商判。
+        for (let pass = 0; pass < 3 && estimate > budget; pass += 1) {
+          const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal, force: true });
+          if (!compacted) break;
           payload.input = compacted.input;
           payloadBytesNote = compacted.note;
           compactionAttempted = true;
+          estimate = estimateTokens(payload, payloadBytes);
           process.stdout.write(`[compact] ${route.id}: ${compacted.note}\n`);
-        } else {
-          // 压不动（历史太短、找不到安全切点）就照原样转发：让供应商去判，而不是我们替它判。
-          process.stdout.write(`[compact] ${route.id}: 需要压缩但没有可用的切点，按原样转发\n`);
+        }
+        if (estimate > budget) {
+          // 连一条可切的边界都找不到时，缩短较早的工具输出：调用与返回仍然成对，
+          // 供应商不会因为「工具结果找不到调用」而 400，用户也不会看到对话被掐断。
+          const trimmed = trimOldToolOutputs(payload, budget);
+          if (trimmed) {
+            payload.input = trimmed.input;
+            payloadBytesNote = trimmed.note;
+            compactionAttempted = true;
+            process.stdout.write(`[compact] ${route.id}: ${trimmed.note}\n`);
+          }
         }
       }
 
       if (["s5090-ornith", "s5090-qwen"].includes(route.id) && !payload.instructions?.includes(localAgentInstructions)) payload.instructions = `${localAgentInstructions}\n\n${payload.instructions || ""}`;
       const key = await store.secret(route.credentialID);
       const busyKey = localConcurrencyKey(route);
-      if (payload.stream && route.protocol !== "responses") {
+      if (payload.stream && route.protocol !== "responses" && !response.headersSent) {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
         sseStream = true;
         response.write(": waiting\n\n");
@@ -443,25 +478,21 @@ export function createGateway(store = new ModelStore(), options = {}) {
           try {
             if (attempt === "chatgpt") {
               const result = await officialUpstream({ ...target, protocol: attempt }, { ...payload, model: target.model }, callSignal);
-              if (response.headersSent) response.end(await limitedText(result.body));
-              else {
-                response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
-                sseStream = true;
-                armIdle();
-                await pipeline(Readable.fromWeb(result.body), response);
-                disarmIdle();
-              }
+              if (!response.headersSent) response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
+              sseStream = true;
+              armIdle();
+              await pipeline(Readable.fromWeb(result.body), response);
+              disarmIdle();
             } else if (attempt === "responses") {
               const result = await upstream({ ...target, protocol: attempt }, targetKey, "responses", nativePayload({ ...payload, model: target.model }, target.model), 3600000, callSignal);
               if (attempt !== target.protocol) await rememberProtocol(store, target, attempt);
-              if (response.headersSent) response.end(await limitedText(result.body));
-              else {
-                response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
-                if ((result.headers.get("content-type") || "").includes("text/event-stream")) sseStream = true;
-                armIdle();
-                await pipeline(Readable.fromWeb(result.body), response).catch((error) => { throw error; });
-                disarmIdle();
-              }
+              // 这里必须直接转发，不能因为「已经发过响应头」就把整段缓冲下来：
+              // 提前发出去的只是「正在压缩」的注释，正文仍然要一个 token 一个 token 地流。
+              if (!response.headersSent) response.writeHead(200, { "content-type": result.headers.get("content-type") || "application/json", "cache-control": "no-store" });
+              if ((result.headers.get("content-type") || "").includes("text/event-stream")) sseStream = true;
+              armIdle();
+              await pipeline(Readable.fromWeb(result.body), response);
+              disarmIdle();
             } else {
               if (payload.stream && !response.headersSent) {
                 response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
@@ -514,6 +545,11 @@ export function createGateway(store = new ModelStore(), options = {}) {
             // 预检没算准、供应商仍然报「上下文超了」时，在这里补一次压缩并重试同一个供应商。
             // Codex 自己不会做这件事（实测：它只会把这一轮标记失败），而用户想看到的是一句正常回答。
             // 只补一次：压完还超就说明这个窗口真的装不下，那时再如实报错。
+            if (isContextOverflow(error)) {
+              // 供应商的报错里往往写着它真正能装多少。与其慢慢猜，不如直接记下来。
+              const learned = await rememberContextWindow(store, target, error.detail);
+              if (learned) process.stdout.write(`[window] ${target.id}: 供应商说上限是 ${learned}，已记下\n`);
+            }
             if (!compactionAttempted && isContextOverflow(error)) {
               compactionAttempted = true;
               const retried = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal });

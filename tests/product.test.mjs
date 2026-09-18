@@ -168,8 +168,11 @@ test("imports cannot overwrite routes or bind existing credentials", async (cont
 
 test("rejects traversal, URL credentials, nonlocal cleartext and malformed fields", () => {
   const base = { id: "test", name: "Test", endpoint: "https://api.example.com/v1", protocol: "chat", model: "demo" };
-  for (const invalid of [{ id: "../escape" }, { endpoint: "http://api.example.com/v1" }, { endpoint: "https://user:secret@example.com" }, { endpoint: "https://api.example.com?key=secret" }, { contextWindow: 0 }, { model: "model\nattack" }]) assert.throws(() => validateRoute({ ...base, ...invalid }));
+  for (const invalid of [{ id: "../escape" }, { endpoint: "http://api.example.com/v1" }, { endpoint: "https://user:secret@example.com" }, { endpoint: "https://api.example.com?key=secret" }, { contextWindow: 3000000 }, { model: "model\nattack" }]) assert.throws(() => validateRoute({ ...base, ...invalid }));
   assert.equal(validateRoute({ ...base, endpoint: "http://192.168.1.20:11434/v1" }).endpoint, "http://192.168.1.20:11434/v1");
+  // 0 / 留空表示「按模型自动匹配」，查不到也要有 512K 兜底，而不是卡在 128K。
+  assert.equal(validateRoute({ ...base, contextWindow: 0 }).contextWindow, 512000);
+  assert.equal(validateRoute({ ...base }).contextWindow, 512000);
 });
 
 test("dynamic config is idempotent, isolates provider, preserves project settings", () => {
@@ -489,8 +492,11 @@ test("长会话超过模型窗口时不再拦下：压不动就照原样转发�
 
   // 窗口预算就是「窗口的九成」：留出输出空间，也避免贴着上限发请求。
   assert.equal(contextBudget({ contextWindow: 512000 }), 460800);
-  assert.equal(contextBudget({ contextWindow: 0 }), 0);
-  assert.equal(contextBudget({}), 0);
+  // 没填窗口不等于「无限」：按模型匹配、查不到就用 512K 兜底。
+  assert.equal(contextBudget({ contextWindow: 0, model: "某个没见过的模型" }), 460800);
+  assert.equal(contextBudget({}), 460800);
+  // 官方模型用实测到的 272K，而不是旧的 128K 占位值。
+  assert.equal(contextBudget({ model: "gpt-6-astra", contextWindow: 128000 }), Math.floor(272000 * 0.9));
 });
 
 // 现场那次的数字：会话里贴了几张截图（base64 一共十几 MB），网关按字节折算，
@@ -549,4 +555,28 @@ test("供应商报上下文超限时，网关压缩后重试，用户看到的�
   assert.equal(response.status, 200, `应压缩后重试成功，实际 ${response.status}: ${text.slice(0, 200)}`);
   assert.match(text, /MODEL_ASSISTANT_OK/);
   assert.equal(hits, 3, "一次被拒 + 一次摘要 + 一次重试");
+});
+
+
+// 供应商的报错里常常写着它真正能装多少。与其一直猜，不如记下来给下一条请求用。
+test("供应商说出的真实上限会被记回条目，窗口自己会越用越准", async (context) => {
+  const store = await fixture(context);
+  const upstreamURL = await listen(http.createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.statusCode = 400;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ error: { message: "This model's maximum context length is 100000 tokens. Please shorten your messages." } }));
+    });
+  }), context);
+  await store.read();
+  await store.save({ id: "learn-ctx", name: "会学习", endpoint: upstreamURL, protocol: "chat", model: "自定义模型", contextWindow: 0, credentialID: "learn-ctx" }, 1, "k1");
+  // 没填窗口时按模型匹配、查不到用 512K 兜底
+  assert.equal((await store.route("learn-ctx")).contextWindow, 512000);
+  const gateway = await listen(createGateway(store), context);
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
+  await fetch(`${gateway}/router/v1/responses`, {
+    method: "POST", headers, body: JSON.stringify({ model: "learn-ctx", input: [{ role: "user", content: [{ type: "input_text", text: "你好" }] }], stream: false }),
+  });
+  assert.equal((await store.route("learn-ctx")).contextWindow, 100000, "供应商说的上限要记下来");
 });
