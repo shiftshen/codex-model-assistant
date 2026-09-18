@@ -18,7 +18,7 @@
 zsh scripts/fetch-runtime.sh     # 两个架构的 Node 运行时都要（通用二进制需要）
 zsh scripts/build-app.sh         # 通用二进制 + 两份 node
 zsh scripts/install-v2.sh        # 备份旧版、安装到 /Applications、装 LaunchAgent
-zsh scripts/package-release.sh   # 出 dmg 并追加 SHA-256
+zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时会自动公证并装订
 ```
 
 兼容性验证记录见 `docs/COMPATIBILITY.md`。
