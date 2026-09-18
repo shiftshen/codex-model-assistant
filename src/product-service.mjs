@@ -137,6 +137,22 @@ export function parseOfficialRunning(output, root) {
   return found;
 }
 
+// 窗口当前实际在用的模型。Codex 会把自己的选择写进窗口 home 的 .codex-global-state.json，
+// 而助手以前只显示「启动时模型」——用户随时会在 Codex 顶部换模型，那个字段永远停在第一次的值，
+// 界面上就一直显示旧的，看起来像「我切了但没生效」。
+export async function readWindowCurrentModel(homePath) {
+  try {
+    const raw = await fs.readFile(path.join(homePath, ".codex-global-state.json"), "utf8");
+    const state = JSON.parse(raw)?.["electron-persisted-atom-state"] ?? {};
+    const recent = state["composer-recent-model-configurations-v1"];
+    if (!Array.isArray(recent) || !recent.length) return "";
+    const model = recent[0]?.model;
+    return typeof model === "string" ? model.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -590,16 +606,17 @@ export class ProductService {
     }
     return {
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
-      windows: registry.windows.map((entry) => ({
+      windows: await Promise.all(registry.windows.map(async (entry) => ({
         id: entry.id,
         name: entry.name,
         initialModel: entry.initialModel,
+        currentModel: await readWindowCurrentModel(windowPaths(this.store.root, entry.id).homePath),
         createdAt: entry.createdAt,
         legacy: entry.id === legacyWindowID,
         running: running.has(entry.id),
         pid: running.get(entry.id) || 0,
         homePath: windowPaths(this.store.root, entry.id).homePath,
-      })),
+      }))),
       orphans,
       routerRunning: running.has(legacyWindowID),
       routerRunningInstances: [...running.keys()].sort(),

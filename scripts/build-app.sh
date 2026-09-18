@@ -11,6 +11,13 @@ if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
   "$ROOT/scripts/make-icon.sh"
 fi
 
+# 构建产物落在仓库的 build/ 里，会被 Spotlight / LaunchServices 一起收录，
+# 结果 Launchpad 里出现两个「Codex 模型助手」（一个是 /Applications 里的正主，
+# 一个是这里的构建产物）。放一个 .metadata_never_index 并主动注销，别让它再冒出来。
+touch "$BUILD/.metadata_never_index"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+
 swiftc \
   -parse-as-library \
   -O \

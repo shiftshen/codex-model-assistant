@@ -160,6 +160,9 @@ struct WorkWindow: Decodable, Identifiable, Hashable {
     let id: String
     let name: String
     var initialModel: String?
+    // 窗口当前实际在用的模型（Codex 自己的选择）。initialModel 只是打开时的默认值，
+    // 用户随时会在 Codex 顶部换模型，所以两个都要显示，否则界面看起来像「切了没生效」。
+    var currentModel: String?
     var createdAt: String?
     var legacy: Bool?
     var running: Bool?
@@ -229,6 +232,14 @@ final class LibraryViewModel: ObservableObject {
     func isLocal(_ model: ManagedModel) -> Bool { Self.localRouteIDs.contains(model.id) }
     // 「这个模型是不是已经开着」：官方入口看官方 Codex 进程；其它模型看有没有窗口正跑着它
     // （起始模型就是它），再加上本地实例的状态。以前只查本地实例，所以普通模型明明开着也不亮。
+    // Codex 记的是「模型 slug」，助手库里存的是条目 id。三种都对一遍，显示成可读名字。
+    func displayName(forModelKey key: String?) -> String? {
+        guard let key, !key.isEmpty else { return nil }
+        if let hit = switchModels.first(where: { $0.slug == key || $0.id == key || $0.model == key }) { return hit.name }
+        if let hit = models.first(where: { $0.id == key || $0.model == key }) { return hit.name }
+        return key
+    }
+
     func isRunning(_ model: ManagedModel) -> Bool {
         if model.`protocol` == "oauth" { return officialArchive?.officialRunning == true }
         if localStatus?.runningInstances.contains(model.id) == true { return true }

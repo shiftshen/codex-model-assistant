@@ -159,8 +159,13 @@ struct ModelLibraryView: View {
                         Text("运行中 · PID \(window.pid ?? 0)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
                     }
                 }
-                Text("起始模型：\(library.models.first { $0.id == window.initialModel }?.name ?? "自动")")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                if let current = library.displayName(forModelKey: window.currentModel) {
+                    Text("当前模型：\(current)").font(.system(size: 11, weight: .semibold))
+                } else {
+                    Text("当前模型：打开后在 Codex 顶部选择").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Text("启动时模型：\(library.displayName(forModelKey: window.initialModel) ?? "自动")（只是打开时的默认值，之后在 Codex 里换模型不影响这一项）")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(2)
                 Text(window.homePath ?? "").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                     .lineLimit(1).truncationMode(.middle)
             }
