@@ -115,7 +115,11 @@ export function parseRunningWindows(output, root) {
 }
 
 export class ProductService {
-  constructor(store = new ModelStore()) { this.store = store; }
+  constructor(store = new ModelStore()) {
+    this.store = store;
+    // 官方库路径可注入：测试要把它指到临时目录，绝不能读到真实的 ~/.codex。
+    this.officialHome = sharedHome;
+  }
   // 窗口运行状态：id → pid（0 表示命令行里没有 pid，通常来自测试夹具）。
   async runningSlots() {
     try {
@@ -334,12 +338,36 @@ export class ProductService {
     if (route.protocol !== "oauth") await this.gatewayReady();
     const { hasContinuation } = await this.instancePaths(id);
     if (continueExisting && route.protocol === "oauth") throw new Error("官方会话无需导入第三方实例");
-    if (continueExisting) await snapshotConversations(sharedHome, path.join(this.store.root, "continuations-v1", id, "codex-home"), route);
+    // 第一次「导入原会话并继续」会整份快照官方会话；这一次不能顺手清理，否则刚导入就被当成旧副本删掉。
+    // 之后 continuation 目录已经建好，再启动就是普通启动，照常清理。
+    const freshImport = continueExisting && !hasContinuation;
+    const continuationHome = path.join(this.store.root, "continuations-v1", id, "codex-home");
+    if (freshImport) await snapshotConversations(this.officialHome, continuationHome, route);
     const instanceRoot = continueExisting || hasContinuation ? "continuations-v1" : "instances-v2";
     const homePath = path.join(this.store.root, instanceRoot, id, "codex-home");
     const userDataPath = path.join(this.store.root, instanceRoot, id, "browser-data");
     await fs.mkdir(homePath, { recursive: true, mode: 0o700 });
     await fs.mkdir(userDataPath, { recursive: true, mode: 0o700 });
+    // 模型窗口（instances-v2 / continuations-v1）才是副本堆得最多的地方，启动前也要清一次。
+    // 此刻 Codex 还没打开任务库，删副本不会和运行中的进程抢锁。
+    let diskCleanup = null;
+    if (freshImport) {
+      diskCleanup = { skipped: "本次要把官方会话导入进来，先不清理" };
+    } else {
+      try {
+        diskCleanup = await cleanupWindowOnLaunch({
+          root: this.store.root,
+          officialHome: this.officialHome,
+          windowID: id,
+          home: homePath,
+          runningIds: new Set([...(await this.runningWindows()).keys()]),
+          policy: await readDiskPolicy(this.store),
+        });
+      } catch (error) {
+        diskCleanup = { error: error.message };
+      }
+    }
+    if (continueExisting && !freshImport) await snapshotConversations(this.officialHome, continuationHome, route);
     const catalogPath = path.join(homePath, "model-catalog.json");
     let source = "";
     try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -370,7 +398,7 @@ export class ProductService {
       try { original = await fs.readFile(path.join(sharedHome, "AGENTS.md"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
       await fs.writeFile(path.join(homePath, "AGENTS.md"), original + "\n\n" + localExpertInstructions, { mode: 0o600 });
     }
-    return { route, homePath, userDataPath };
+    return { route, homePath, userDataPath, diskCleanup };
   }
   // 一个条目可能只有普通实例目录，也可能已经有一份"导入原会话"的副本目录。
   async instancePaths(id) {
@@ -428,7 +456,15 @@ export class ProductService {
     const child = spawn(appBinary, [`--user-data-dir=${prepared.userDataPath}`], { env: environment, stdio: "ignore", detached: true });
     await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     child.unref();
-    return { homePath: prepared.homePath, userDataPath: prepared.userDataPath, message: options.continueExisting ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。" : "已发送独立启动请求；同一模型会复用已有窗口。修改模型后请关闭该模型旧窗口再启动。" };
+    const cleaned = prepared.diskCleanup?.freedBytes
+      ? ` 顺手清掉了 ${prepared.diskCleanup.deletedThreads} 个不重要副本和 ${prepared.diskCleanup.deletedCacheDirs} 个缓存目录，释放 ${(prepared.diskCleanup.freedBytes / 1024 ** 3).toFixed(1)} GB。`
+      : "";
+    return {
+      homePath: prepared.homePath,
+      userDataPath: prepared.userDataPath,
+      diskCleanup: prepared.diskCleanup,
+      message: (options.continueExisting ? "已打开原会话的独立副本；后续工作保存在此模型窗口，原官方会话不受影响。" : "已发送独立启动请求；同一模型会复用已有窗口。修改模型后请关闭该模型旧窗口再启动。") + cleaned,
+    };
   }
   switchPaths() {
     // 遗留入口：早期只有一个「可切换窗口」，现在它只是注册表里的第一个窗口（槽位 router）。
@@ -501,7 +537,7 @@ export class ProductService {
     try {
       diskCleanup = await cleanupWindowOnLaunch({
         root: this.store.root,
-        officialHome: sharedHome,
+        officialHome: this.officialHome,
         windowID: id,
         home: paths.homePath,
         runningIds: new Set([...(await this.runningWindows()).keys()]),

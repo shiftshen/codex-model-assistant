@@ -8,6 +8,29 @@ import { ModelStore, validateRoute, atomicJSON } from "../src/model-store.mjs";
 import { ProductService, renderProductConfig } from "../src/product-service.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, nativePayload } from "../src/protocol-adapter.mjs";
 import { createGateway, upstream } from "../src/model-gateway.mjs";
+import { staleDays } from "../src/disk-cleanup.mjs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+// 造一个够真实的窗口任务库：disk-cleanup 要按 id/rollout_path/updated_at/archived/title 判断副本。
+async function seedThreads(home, entries) {
+  const db = path.join(home, "state_5.sqlite");
+  await fs.mkdir(path.dirname(db), { recursive: true });
+  await execFileAsync("/usr/bin/sqlite3", [db, [
+    "create table if not exists threads (id text primary key, rollout_path text, created_at integer, updated_at integer, source text, model_provider text, cwd text, title text, sandbox_policy text, approval_mode text, archived integer not null default 0, model text, reasoning_effort text);",
+    "create table if not exists thread_attachments (thread_id text);",
+    "create table if not exists thread_dynamic_tools (thread_id text);",
+  ].join("\n")]);
+  for (const entry of entries) {
+    const file = path.join(home, "sessions", `${entry.id}.jsonl`);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "x".repeat(entry.bytes ?? 64));
+    await execFileAsync("/usr/bin/sqlite3", [db, `insert or replace into threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode, archived, model) values ('${entry.id}', '${file}', ${entry.updatedAt}, ${entry.updatedAt}, 'cli', 'cma_router', '/tmp', '会话 ${entry.id}', 'danger-full-access', 'never', ${entry.archived ?? 0}, 'deepseek-flash');`]);
+  }
+  return db;
+}
 
 async function fixture(context) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "cma-product-"));
@@ -315,4 +338,61 @@ test("native Responses proxy preserves tool history and rejects cross-route toke
   const result = await fetch(endpoint, { method: "POST", headers: { authorization: `Bearer ${await store.token("native")}` }, body: payload });
   assert.match(await result.text(), /response.completed/);
   assert.equal(seen, 1);
+});
+
+// 副本堆得最多的是模型窗口（continuations-v1 / instances-v2），所以启动前也必须清一次。
+test("启动模型窗口前清掉不重要副本，首次「导入原会话并继续」那一次不清理", async (context) => {
+  const store = await fixture(context);
+  const officialHome = path.join(store.root, "official-codex");
+  const now = Math.floor(Date.now() / 1000);
+  const ancient = now - (staleDays + 5) * 86400;
+
+  // 官方库是权威：一条已归档、一条超 30 天、一条 30 天内的，三条都要留着。
+  await seedThreads(officialHome, [
+    { id: "arch-1", updatedAt: now, archived: 1 },
+    { id: "old-1", updatedAt: ancient },
+    { id: "fresh-1", updatedAt: now },
+  ]);
+
+  const routeID = "deepseek-flash";
+  const windowRoot = path.join(store.root, "continuations-v1", routeID);
+  const winHome = path.join(windowRoot, "codex-home");
+  // conversation-import.json 一在，这个窗口就被当成「续接窗口」，启动走的正是 prepare() 这条路径。
+  await fs.mkdir(winHome, { recursive: true });
+  await fs.writeFile(path.join(winHome, "conversation-import.json"), JSON.stringify({ source: officialHome, routeID, model: "deepseek-flash" }));
+  await seedThreads(winHome, [
+    { id: "arch-1", updatedAt: now, bytes: 2048 },
+    { id: "old-1", updatedAt: ancient, bytes: 4096 },
+    { id: "fresh-1", updatedAt: now, bytes: 512 },
+    { id: "own-1", updatedAt: now, bytes: 1024 },
+  ]);
+
+  const service = new ProductService(store);
+  service.officialHome = officialHome;
+  service.check = async () => ({ ok: true });
+  service.gatewayReady = async () => {};
+
+  const prepared = await service.prepare(routeID);
+  assert.equal(prepared.diskCleanup.deletedThreads, 2, "已归档 + 超 30 天各一条");
+  assert.equal(prepared.diskCleanup.deletedCacheDirs, 0);
+  assert.ok(prepared.diskCleanup.freedBytes > 0);
+  await assert.rejects(() => fs.access(path.join(winHome, "sessions", "arch-1.jsonl")), /ENOENT/);
+  await assert.rejects(() => fs.access(path.join(winHome, "sessions", "old-1.jsonl")), /ENOENT/);
+  await fs.access(path.join(winHome, "sessions", "fresh-1.jsonl"));
+  await fs.access(path.join(winHome, "sessions", "own-1.jsonl"));
+  // 官方库只读：三条原件一条都不能少。
+  for (const id of ["arch-1", "old-1", "fresh-1"]) await fs.access(path.join(officialHome, "sessions", `${id}.jsonl`));
+
+  // 幂等：再启动一次没有可清的。
+  const again = await service.prepare(routeID);
+  assert.equal(again.diskCleanup.deletedThreads, 0);
+  assert.equal(again.diskCleanup.freedBytes, 0);
+
+  // 第一次「导入原会话并继续」：刚导入的会话不能被立刻当成旧副本删掉。
+  await fs.rm(windowRoot, { recursive: true, force: true });
+  const fresh = await service.prepare(routeID, { continueExisting: true });
+  assert.match(fresh.diskCleanup.skipped, /先不清理/);
+  for (const id of ["arch-1", "old-1", "fresh-1"]) {
+    await fs.access(path.join(winHome, "sessions", `${id}.jsonl`));
+  }
 });
