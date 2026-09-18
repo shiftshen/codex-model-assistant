@@ -147,25 +147,18 @@ export function failureCode(status, detail) {
   return "";
 }
 
-// 发送前先按路由自己的 contextWindow 比一比：不匹配就直接告诉用户换哪个模型，
-// 而不是把请求发出去、等一分钟、再收到一句供应商的英文报错。
-export function contextGuard(table, payload, bodyBytes) {
-  const pick = (entries) => entries
-    .filter((entry) => Number(entry.route.contextWindow) > 0)
-    .sort((left, right) => Number(right.route.contextWindow) - Number(left.route.contextWindow))[0] ?? null;
-  return {
-    estimate: estimateTokens(payload, bodyBytes),
-    suggest: () => pick(table),
-  };
+// 一个窗口实际能装下多少输入：要留出这次回答的输出空间，也要给摘要本身留位置。
+// 官方模型按 95% 算，第三方引擎很难吃满标称窗口，这里按 90% 算——宁可早一点压缩，
+// 也不要把请求发出去、等供应商报 400。
+export function contextBudget(route) {
+  const window = Number(route?.contextWindow) || 0;
+  return window > 0 ? Math.floor(window * 0.9) : 0;
 }
 
-export function contextGuardMessage(route, estimate, best) {
-  const used = `${Math.round(estimate / 1000)}K tokens 左右`;
-  const limit = Math.round(Number(route.contextWindow) / 1000);
-  const advice = best && best.route.id !== route.id && Number(best.route.contextWindow) > Number(route.contextWindow)
-    ? `这个窗口里「${best.route.name}」的上下文是 ${Math.round(Number(best.route.contextWindow) / 1000)}K，改用它可以继续同一个对话。`
-    : "可以在 Codex 顶部换一个上下文更大的模型，或新开一个会话继续同一件事。";
-  return `这段对话约 ${used}，超过「${route.name}」的上下文上限（${limit}K）。${advice}`;
+// 供应商自己报「上下文超了」时用得上：Codex 对这类模型不会自己压缩（已实测），
+// 所以网关要认得出这个错误，替它压一次再重试。
+export function isContextOverflow(error) {
+  return failureCode(error?.status ?? 0, error?.detail || "") === "context_length_exceeded";
 }
 
 // 压缩：把较早的记录换成摘要，保留最近一段完整对话。
@@ -392,39 +385,37 @@ export function createGateway(store = new ModelStore(), options = {}) {
       const payload = await limitedJSON(request, requestLimitBytes);
       const payloadBytes = Number(payload.__bytes) || 0;
       let payloadBytesNote = "";
+      // 压缩只做一次：预检做过就不再重复，避免「压了又压」把会话掏空。
+      let compactionAttempted = false;
       if (switched) {
         const table = buildRouterTable((await store.read()).routes);
         const entry = routerTableEntry(table, payload.model);
         if (!entry) return sendJSON(response, 400, { error: { message: "所选模型不在可切换窗口内，请在模型助手中重新打开切换窗口" } });
         route = entry.route;
         payload.model = route.model;
-        // 长会话在切换模型时最容易踩这个坑：用户以为「换个模型就能继续」，
-        // 结果新模型的上下文比原来小。这里不再直接拒绝，而是先压缩再继续（见下方 compact）。
-        const guard = contextGuard(table, payload, payloadBytes);
-        const limit = Number(route.contextWindow);
-        if (limit > 0 && guard.estimate > limit) {
-          const compacted = await compactForWindow({ store, route, payload, limit, signal: abort.signal });
-          if (compacted) {
-            payload.input = compacted.input;
-            payloadBytesNote = compacted.note;
-            process.stdout.write(`[compact] ${payload.model}: ${compacted.note}\n`);
-          } else {
-            const best = guard.suggest();
-            return sendJSON(response, 400, {
-              error: {
-                code: "context_length_exceeded",
-                message: contextGuardMessage(route, guard.estimate, best),
-                // 用 Responses API 的标准错误形态：Codex 会把它识别成 context_window_exceeded，
-                // 走它自己的上下文处理，而不是当成网关故障。
-                type: "invalid_request_error",
-                param: null,
-              },
-            });
-          }
-        }
       } else if (!route.model || payload.model !== route.model) {
         return sendJSON(response, 400, { error: { message: "模型与实例不匹配，请在助手中创建对应实例" } });
       }
+      // 会话比这个模型的窗口装得下时，静默压缩掉最早的部分再继续，绝不把请求挡回去。
+      // 为什么必须由网关做：Codex 对目录里的自定义模型不会自己压缩——实测把
+      // context_window=40000、auto_compact_token_limit=38000 喂给它（并打开 context_management /
+      // token_budget 两个开关），它照样带着约 6 万 token 的历史一路往下发；供应商回
+      // context_length_exceeded 时它也只把这一轮标记为失败，不会自己压缩重试。
+      // 用户要的是「接着说」，所以压缩这件事得有人替它做，而且不能留下痕迹。
+      const budget = contextBudget(route);
+      if (budget > 0 && estimateTokens(payload, payloadBytes) > budget) {
+        const compacted = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal });
+        if (compacted) {
+          payload.input = compacted.input;
+          payloadBytesNote = compacted.note;
+          compactionAttempted = true;
+          process.stdout.write(`[compact] ${route.id}: ${compacted.note}\n`);
+        } else {
+          // 压不动（历史太短、找不到安全切点）就照原样转发：让供应商去判，而不是我们替它判。
+          process.stdout.write(`[compact] ${route.id}: 需要压缩但没有可用的切点，按原样转发\n`);
+        }
+      }
+
       if (["s5090-ornith", "s5090-qwen"].includes(route.id) && !payload.instructions?.includes(localAgentInstructions)) payload.instructions = `${localAgentInstructions}\n\n${payload.instructions || ""}`;
       const key = await store.secret(route.credentialID);
       const busyKey = localConcurrencyKey(route);
@@ -447,7 +438,8 @@ export function createGateway(store = new ModelStore(), options = {}) {
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);
-        for (const [index, attempt] of attempts.entries()) {
+        for (let index = 0; index < attempts.length; index += 1) {
+          const attempt = attempts[index];
           try {
             if (attempt === "chatgpt") {
               const result = await officialUpstream({ ...target, protocol: attempt }, { ...payload, model: target.model }, callSignal);
@@ -518,6 +510,23 @@ export function createGateway(store = new ModelStore(), options = {}) {
               clearInterval(heartbeat);
               heartbeat = undefined;
               continue;
+            }
+            // 预检没算准、供应商仍然报「上下文超了」时，在这里补一次压缩并重试同一个供应商。
+            // Codex 自己不会做这件事（实测：它只会把这一轮标记失败），而用户想看到的是一句正常回答。
+            // 只补一次：压完还超就说明这个窗口真的装不下，那时再如实报错。
+            if (!compactionAttempted && isContextOverflow(error)) {
+              compactionAttempted = true;
+              const retried = await compactForWindow({ store, route, payload, limit: budget, signal: abort.signal });
+              if (retried) {
+                payload.input = retried.input;
+                payloadBytesNote = retried.note;
+                process.stdout.write(`[compact] ${route.id}: 供应商报超限，压缩后重试 —— ${retried.note}\n`);
+                clearInterval(heartbeat);
+                heartbeat = undefined;
+                index -= 1;
+                continue;
+              }
+              process.stdout.write(`[compact] ${route.id}: 供应商报超限，但历史没有可用的切点，如实报错\n`);
             }
             break;
           }

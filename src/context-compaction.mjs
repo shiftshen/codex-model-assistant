@@ -8,11 +8,62 @@
 // 也不要算少了把请求发出去、等一分钟再收到供应商的 400。
 export const bytesPerToken = 3.2;
 
-export function estimateTokens(payload, bodyBytes) {
-  const output = Number(payload?.max_output_tokens) > 0 ? Number(payload.max_output_tokens) : 0;
-  return Math.round((Number(bodyBytes) || 0) / bytesPerToken) + output;
+// 图片在请求体里是 base64：一张 300 KB 的截图光 base64 就有 400 KB。
+// 按字节折算成 token 会凭空多出十几万 token，而它在供应商那边的真实成本只有几百到几千。
+// 这就是「明明没超窗口，网关却报超过上限」的根因——所以图片必须单独计价，不按字节算。
+export const imageTokenCost = 1200;
+
+const imageKinds = new Set(["input_image", "image_url", "image"]);
+const toolOutputKinds = new Set(["function_call_output", "custom_tool_call_output"]);
+
+function utf8Bytes(value) {
+  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : 0;
 }
 
+// 只统计「真正会被分词的内容」：文本与工具输出的字面量，外加图片的张数。
+// 序列化后的 JSON 字节数会把转义、键名和 base64 图片一起算进去，跟真实用量差得远。
+function contentFootprint(content, acc) {
+  if (typeof content === "string") { acc.bytes += utf8Bytes(content); return acc; }
+  if (!Array.isArray(content)) return acc;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (imageKinds.has(part.type)) { acc.images += 1; continue; }
+    if (typeof part.text === "string") acc.bytes += utf8Bytes(part.text);
+    if (typeof part.image_url === "string") acc.images += 1;
+  }
+  return acc;
+}
+
+export function contentUsage(payload) {
+  const acc = { bytes: utf8Bytes(payload?.instructions), images: 0, items: 0 };
+  const input = payload?.input;
+  if (typeof input === "string") { acc.bytes += utf8Bytes(input); return acc; }
+  if (!Array.isArray(input) || input.length === 0) return null;
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    acc.items += 1;
+    if (item.type === "function_call" || item.type === "custom_tool_call") {
+      acc.bytes += utf8Bytes(item.arguments);
+      acc.bytes += utf8Bytes(typeof item.input === "string" ? item.input : undefined);
+      continue;
+    }
+    if (toolOutputKinds.has(item.type)) { contentFootprint(item.output, acc); continue; }
+    contentFootprint(item.content, acc);
+  }
+  return acc;
+}
+
+// 估算发送这次请求要用掉多少 token。
+// 文本按字节折算（本仓实测约 3.6 字节/token，这里用 3.2 偏保守），图片按张计价。
+// 万一历史结构不认识，退回按整体字节数折算——宁可高估，也不要漏算。
+export function estimateTokens(payload, bodyBytes, options = {}) {
+  const output = Number(payload?.max_output_tokens) > 0 ? Number(payload.max_output_tokens) : 0;
+  const perToken = Number(options.bytesPerToken) > 0 ? Number(options.bytesPerToken) : bytesPerToken;
+  const perImage = Number.isFinite(Number(options.imageTokenCost)) ? Number(options.imageTokenCost) : imageTokenCost;
+  const usage = contentUsage(payload);
+  if (!usage) return Math.round((Number(bodyBytes) || 0) / perToken) + output;
+  return Math.round(usage.bytes / perToken) + usage.images * perImage + output;
+}
 function itemBytes(item) {
   try { return JSON.stringify(item ?? "").length; } catch { return 0; }
 }
@@ -20,8 +71,6 @@ function itemBytes(item) {
 function itemKind(item) {
   return String(item?.type ?? (item?.role ? `message:${item.role}` : ""));
 }
-
-const toolOutputKinds = new Set(["function_call_output", "custom_tool_call_output"]);
 
 // 切点必须落在「一条普通用户消息」上：往前挪会把工具调用和它的输出拆开，
 // 供应商会因为「工具结果找不到对应的调用」直接 400。

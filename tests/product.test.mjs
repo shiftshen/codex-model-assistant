@@ -7,7 +7,7 @@ import http from "node:http";
 import { ModelStore, validateRoute, atomicJSON } from "../src/model-store.mjs";
 import { ProductService, renderProductConfig } from "../src/product-service.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, nativePayload } from "../src/protocol-adapter.mjs";
-import { createGateway, upstream } from "../src/model-gateway.mjs";
+import { createGateway, upstream, estimateTokens, contextBudget } from "../src/model-gateway.mjs";
 import { staleDays } from "../src/disk-cleanup.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -451,9 +451,9 @@ test("超过新上限时报 413 并说清怎么办，而不是含糊的 502", as
   assert.equal(missing.status, 401);
 });
 
-// 长会话换模型最常见的失败：新模型上下文比原来的小，用户以为「换个模型就能继续」。
-// 网关要提前算清楚并推荐本窗口里更大的那个，而不是把请求发出去等供应商报英文错。
-test("长会话切到小上下文模型时提前拦下，并推荐本窗口里更大的模型", async (context) => {
+// 用户的原话：「不能超过就断开服务啊，这完全不符合 codex 的操作逻辑」。
+// 这条测试就是把这个承诺钉住：网关只能压缩，不能因为自己算出来的数字把对话掐断。
+test("长会话超过模型窗口时不再拦下：压不动就照原样转发，绝不掐断对话", async (context) => {
   const store = await fixture(context);
   let upstreamHits = 0;
   const upstreamURL = await listen(http.createServer((request, response) => {
@@ -473,19 +473,80 @@ test("长会话切到小上下文模型时提前拦下，并推荐本窗口里�
   const endpoint = `${gateway}/router/v1/responses`;
   const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
   // 2 MB ≈ 65 万 tokens：超过 512K 的小上下文，但 1M 的大上下文能接住（就是现场那次的形态）。
+  // 2 MB ≈ 65 万 token：远超 512K 的小上下文。历史是纯字符串（没有可切的用户消息），
+  // 压缩无从下手——这时候必须原样转发，让供应商自己判断，而不是网关替它拒绝。
   const big = "y".repeat(2 * 1024 * 1024);
-  const blocked = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "small-ctx", input: big, stream: false }) });
-  const body = await blocked.json();
-  assert.equal(blocked.status, 400);
-  assert.equal(body.error.code, "context_length_exceeded");
-  assert.match(body.error.message, /超过「小上下文」的上下文上限（512K）/);
-  assert.match(body.error.message, /大上下文/);
-  assert.match(body.error.message, /1000K/);
-  assert.equal(upstreamHits, 0, "预检拦下时不该真的打到供应商");
+  const oversize = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "small-ctx", input: big, stream: false }) });
+  assert.equal(oversize.status, 200, "超窗不是拒绝的理由，必须照发");
+  assert.match(await oversize.text(), /MODEL_ASSISTANT_OK/);
+  assert.equal(upstreamHits, 1);
 
-  // 换成大上下文模型：同样的请求要放行
+  // 换成大上下文模型：同样放行
   const allowed = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "big-ctx", input: big, stream: false }) });
   assert.equal(allowed.status, 200);
-  assert.equal(upstreamHits, 1);
+  assert.equal(upstreamHits, 2);
   assert.match(await allowed.text(), /MODEL_ASSISTANT_OK/);
+
+  // 窗口预算就是「窗口的九成」：留出输出空间，也避免贴着上限发请求。
+  assert.equal(contextBudget({ contextWindow: 512000 }), 460800);
+  assert.equal(contextBudget({ contextWindow: 0 }), 0);
+  assert.equal(contextBudget({}), 0);
+});
+
+// 现场那次的数字：会话里贴了几张截图（base64 一共十几 MB），网关按字节折算，
+// 凭空多出几十万 token，于是「明明没超窗口」却报超过上限。图片必须按张计价。
+test("base64 截图不再被当成文本：图片按张计价，估算不再凭空撑大", async () => {
+  const text = { role: "user", content: [{ type: "input_text", text: "x".repeat(32000) }] };
+  const screenshot = { role: "user", content: [{ type: "input_image", image_url: `data:image/png;base64,${"A".repeat(400 * 1024)}` }] };
+  const textOnly = estimateTokens({ input: [text] }, 33000);
+  const withShot = estimateTokens({ input: [text, screenshot] }, 450000);
+  assert.equal(textOnly, 10000);
+  assert.ok(withShot - textOnly < 5000, `图片不该按字节折算：${withShot} vs ${textOnly}`);
+  assert.ok(withShot >= textOnly + 1000, "图片也要算成本，只是不按字节算");
+  // 结构认不出来时仍然退回按字节折算，宁可高估也不能漏算。
+  assert.equal(estimateTokens({ input: "y".repeat(3200) }, 3200), 1000);
+  assert.equal(estimateTokens({ max_output_tokens: 1000 }, 3200000), 1001000);
+});
+
+// 预检没算准、供应商仍然报「上下文超了」时，网关要自己补一次压缩再重试。
+// Codex 不会做这件事——实测它只会把这一轮标记失败，对话就此断掉。
+test("供应商报上下文超限时，网关压缩后重试，用户看到的仍是正常回答", async (context) => {
+  const store = await fixture(context);
+  let hits = 0;
+  const upstreamURL = await listen(http.createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      hits += 1;
+      response.setHeader("content-type", "application/json");
+      if (hits === 1) {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ error: { code: "context_length_exceeded", message: "This model's maximum context length is exceeded." } }));
+        return;
+      }
+      if (/上下文压缩/.test(body)) {
+        response.end(JSON.stringify({ choices: [{ message: { content: "任务目标：继续做 X；待办：Y" } }], usage: {} }));
+        return;
+      }
+      response.end(JSON.stringify({ choices: [{ message: { content: "MODEL_ASSISTANT_OK" } }], usage: {} }));
+    });
+  }), context);
+  await store.read();
+  // 窗口取 150K：预检算出来约 125K，够不着 135K 的预算，所以不会提前压缩——
+  // 只有供应商真的回了一句「超了」，才会走到「压缩后重试」这条路上。
+  await store.save({ id: "retry-ctx", name: "重试窗口", endpoint: upstreamURL, protocol: "chat", model: "retry-ctx", contextWindow: 150000, credentialID: "retry-ctx" }, 1, "k1");
+  const gateway = await listen(createGateway(store), context);
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
+  const history = [];
+  for (let index = 0; index < 20; index += 1) {
+    history.push({ role: "user", content: [{ type: "input_text", text: `第 ${index} 轮：请处理 ${"x".repeat(20000)}` }] });
+    history.push({ role: "assistant", content: [{ type: "input_text", text: `第 ${index} 轮完成` }] });
+  }
+  const response = await fetch(`${gateway}/router/v1/responses`, {
+    method: "POST", headers, body: JSON.stringify({ model: "retry-ctx", input: history, stream: false, max_output_tokens: 200 }),
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200, `应压缩后重试成功，实际 ${response.status}: ${text.slice(0, 200)}`);
+  assert.match(text, /MODEL_ASSISTANT_OK/);
+  assert.equal(hits, 3, "一次被拒 + 一次摘要 + 一次重试");
 });
