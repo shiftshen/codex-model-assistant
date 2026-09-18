@@ -6,7 +6,9 @@ RUNTIME="$HOME/.codex/model-assistant/runtime-v2"
 PLIST="$HOME/Library/LaunchAgents/local.shift.codex-model-gateway.plist"
 "$ROOT/scripts/build-app.sh"
 mkdir -p "$RUNTIME" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-cp "$ROOT"/src/*.mjs "$RUNTIME/"
+# 只覆盖不删除的话，删掉的模块会一直留在运行时目录里——用户以为功能没了，
+# 其实旧代码还在磁盘上（还可能被别的进程加载）。用 rsync --delete 做真正的同步。
+rsync -a --delete "$ROOT"/src/ "$RUNTIME/"
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

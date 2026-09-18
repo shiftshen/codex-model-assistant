@@ -7,9 +7,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { ModelStore, atomicJSON, validateRoute } from "./model-store.mjs";
 import { errorMessage, gatewayBuild, gatewayURL, upstream, limitedJSON } from "./model-gateway.mjs";
-import { attachExpertConfig, localExpertInstructions } from "./local-expert-config.mjs";
-import { localCallers, readExpertPolicy } from "./expert-policy.mjs";
-import { localAgentInstructions } from "./local-agent-instructions.mjs";
 import { cleanupPlan, cleanupWindowOnLaunch, diskUsage } from "./disk-cleanup.mjs";
 import { readDiskPolicy } from "./disk-policy.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
@@ -75,7 +72,7 @@ export function renderRouterConfig(source, { model, catalogPath }) {
 }
 
 export function catalog(route) {
-  return { models: [modelInfo(route, route.model, localCallers.includes(route.id) ? localAgentInstructions : "")] };
+  return { models: [modelInfo(route, route.model)] };
 }
 
 // 进程命令行里的 --user-data-dir 决定哪个窗口正在运行：模型窗口是 <root>/<instances-v2|continuations-v1>/<id>/browser-data，
@@ -263,36 +260,6 @@ export class ProductService {
     }
     return orphans;
   }
-  async localRuntimeStatus() {
-    const policy = await readExpertPolicy(this.store);
-    let runningInstances = [];
-    try {
-      const { stdout } = await execFileAsync("/bin/ps", ["-axo", "args"], { maxBuffer: 1024 * 1024 });
-      runningInstances = runningInstancesFromPS(stdout, this.store.root);
-    } catch { }
-    let loadedModels = [];
-    let runtimeKnown = true;
-    try {
-      const routes = (await this.store.read()).routes.filter((route) => localCallers.includes(route.id));
-      const origins = [...new Set(routes.map((route) => new URL(route.endpoint).origin))];
-      for (const origin of origins) {
-        const response = await fetch(`${origin}/api/ps`, { signal: AbortSignal.timeout(1500), redirect: "error" });
-        if (!response.ok) throw new Error("Runtime unavailable");
-        const data = await response.json();
-        if (!Array.isArray(data.models)) throw new Error("Invalid runtime status");
-        loadedModels.push(...data.models.map((model) => model.name).filter(Boolean));
-      }
-    } catch { runtimeKnown = false; }
-    return {
-      preferredLocal: policy.preferredLocal,
-      localCallers,
-      runningInstances,
-      loadedModels,
-      message: !runtimeKnown ? "当前模型服务状态未知，无法确认是否驻留" : loadedModels.length
-        ? `当前 Ollama 已加载：${loadedModels.join(", ")}`
-        : "当前 Ollama 未常驻加载 Ornith 或 Qwen；启动任务后才会按需载入",
-    };
-  }
   async migrateSecrets() {
     for (const [id, relative] of [["deepseek", ".openclaw/secrets/codex-providers/deepseek_api_key"], ["agnes", ".openclaw/secrets/openclaw-runtime/secret-005"]]) {
       if (await this.store.secret(id)) continue;
@@ -441,11 +408,6 @@ export class ProductService {
   }
   async prepare(id, { continueExisting = false } = {}) {
     let route = await this.store.route(id);
-    if (localCallers.includes(id) && route.noKey && route.protocol === "responses" && route.endpoint === "http://127.0.0.1:18791/v1") {
-      const data = await this.store.read();
-      await this.store.save({ ...route, protocol: "chat" }, data.revision);
-      route = await this.store.route(id);
-    }
     if (route.archived || !route.model) throw new Error("模型未配置完整或已归档");
     await this.check(id);
     if (route.protocol !== "oauth") await this.gatewayReady();
@@ -488,12 +450,12 @@ export class ProductService {
     let config;
     if (switching) {
       const table = buildRouterTable((await this.store.read()).routes);
-      await atomicJSON(catalogPath, routerCatalog(table, localCallers));
+      await atomicJSON(catalogPath, routerCatalog(table));
       const slug = table.find((entry) => entry.route.id === id)?.slug || route.model;
-      config = attachExpertConfig(renderRouterConfig(source, { model: slug, catalogPath }), id);
+      config = renderRouterConfig(source, { model: slug, catalogPath });
     } else {
       await atomicJSON(catalogPath, catalog(route));
-      config = attachExpertConfig(renderProductConfig(source, route, catalogPath), id);
+      config = renderProductConfig(source, route, catalogPath);
     }
     const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
     await fs.writeFile(temporary, config, { mode: 0o600 });
@@ -506,11 +468,6 @@ export class ProductService {
       } catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
     }
     await fs.mkdir(path.join(homePath, "memories"), { recursive: true, mode: 0o700 });
-    if (localCallers.includes(id)) {
-      let original = "";
-      try { original = await fs.readFile(path.join(sharedHome, "AGENTS.md"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
-      await fs.writeFile(path.join(homePath, "AGENTS.md"), original + "\n\n" + localExpertInstructions, { mode: 0o600 });
-    }
     return { route, homePath, userDataPath, diskCleanup };
   }
   // 一个条目可能只有普通实例目录，也可能已经有一份"导入原会话"的副本目录。
@@ -544,9 +501,9 @@ export class ProductService {
       const updated = enabled
         ? renderRouterConfig(source, { model: table.find((entry) => entry.route.id === id)?.slug || route.model, catalogPath })
         : renderProductConfig(source, current, catalogPath);
-      await atomicJSON(catalogPath, enabled ? routerCatalog(table, localCallers) : catalog(current));
+      await atomicJSON(catalogPath, enabled ? routerCatalog(table) : catalog(current));
       const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
-      await fs.writeFile(temporary, attachExpertConfig(updated, id), { mode: 0o600 });
+      await fs.writeFile(temporary, updated, { mode: 0o600 });
       await fs.rename(temporary, path.join(homePath, "config.toml"));
     }
     return {
@@ -733,7 +690,7 @@ export class ProductService {
     for (const target of targets) {
       try { await fs.access(path.join(target.home, "state_5.sqlite")); }
       catch (error) { if (error.code === "ENOENT") { skipped.push({ id: target.id, reason: "还没有任务库" }); continue; } throw error; }
-      await atomicJSON(path.join(target.home, "model-catalog.json"), routerCatalog(table, localCallers));
+      await atomicJSON(path.join(target.home, "model-catalog.json"), routerCatalog(table));
       updated.push({ id: target.id, running: running.has(target.id), models: table.length });
     }
     const repairNote = repaired.length
@@ -783,7 +740,7 @@ export class ProductService {
     } catch (error) {
       globalState = { destination: paths.homePath, error: error.message, wrote: false };
     }
-    await atomicJSON(paths.catalogPath, routerCatalog(table, localCallers));
+    await atomicJSON(paths.catalogPath, routerCatalog(table));
     let source = "";
     try { source = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
     const temporary = path.join(paths.homePath, `.config-${randomUUID()}.toml`);

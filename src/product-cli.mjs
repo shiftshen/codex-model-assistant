@@ -3,8 +3,6 @@ import path from "node:path";
 import os from "node:os";
 import { ProductService } from "./product-service.mjs";
 import { limitedJSON } from "./model-gateway.mjs";
-import { ExpertService } from "./expert-service.mjs";
-import { readExpertPolicy, saveExpertPolicy } from "./expert-policy.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
 import { applyCleanup, applyOfficialArchived, cleanupPlan, describePlan, diskUsage, officialArchivedPlan } from "./disk-cleanup.mjs";
 import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
@@ -29,23 +27,7 @@ export function humanBytes(bytes) {
 }
 
 async function main() {
-  if (command === "library") { await store.read(); await service.migrateSecrets(); return { ...(await store.publicData()), expertPolicy: await readExpertPolicy(store), diskPolicy: await readDiskPolicy(store), localStatus: await service.localRuntimeStatus(), ...(await service.switchSummary()) }; }
-  if (command === "local-status") return { localStatus: await service.localRuntimeStatus() };
-  if (command === "expert-status") {
-    const result = await new ExpertService(store).status();
-    return { expertPolicy: result.policy, expertUsage: result.usage, localStatus: await service.localRuntimeStatus(), message: "专家策略和今日额度已更新" };
-  }
-  if (command === "expert-save") {
-    const input = await limitedJSON(process.stdin, 64000);
-    await saveExpertPolicy(store, input);
-    const result = await new ExpertService(store).status();
-    return { expertPolicy: result.policy, expertUsage: result.usage, message: "专家策略已保存，已接入实例的下次咨询即生效" };
-  }
-  if (command === "expert-consult") {
-    const input = await limitedJSON(process.stdin, 128000);
-    const result = await new ExpertService(store).consult(id, input, { manual: true });
-    return { answer: result.answer, message: `${result.cached ? "已复用缓存" : "专家已回答"} · ${result.expert}，请由本地模型继续执行和验证`, ...(await new ExpertService(store).status().then((state) => ({ expertUsage: state.usage }))), localStatus: await service.localRuntimeStatus() };
-  }
+  if (command === "library") { await store.read(); await service.migrateSecrets(); return { ...(await store.publicData()), diskPolicy: await readDiskPolicy(store), ...(await service.switchSummary()) }; }
   if (command === "save") {
     const input = await limitedJSON(process.stdin, 1024 * 1024);
     await store.save(input.route, input.revision, input.key, input.clearKey);

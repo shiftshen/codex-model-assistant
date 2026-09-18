@@ -56,9 +56,6 @@ struct ProductResponse: Decodable {
     var templates: [ProviderTemplate]?
     var models: [String]?
     var exportData: String?
-    var expertPolicy: ExpertPolicy?
-    var expertUsage: ExpertUsage?
-    var localStatus: LocalRuntimeStatus?
     var answer: String?
     var switchModels: [SwitchableModel]?
     var routerRunning: Bool?
@@ -187,14 +184,6 @@ struct UnmanagedWindow: Decodable, Identifiable, Hashable {
     private enum CodingKeys: String, CodingKey { case windowID = "id", slot, running, pid, bytes }
 }
 
-struct LocalRuntimeStatus: Decodable {
-    let preferredLocal: String
-    let localCallers: [String]
-    let runningInstances: [String]
-    let loadedModels: [String]
-    let message: String
-}
-
 @MainActor
 final class LibraryViewModel: ObservableObject {
     @Published var models: [ManagedModel] = []
@@ -212,10 +201,6 @@ final class LibraryViewModel: ObservableObject {
     @Published var showDiscovery = false
     @Published var showDiagnostics = false
     @Published var diagnostics = ""
-    @Published var expertPolicy: ExpertPolicy?
-    @Published var expertUsage: ExpertUsage?
-    @Published var localStatus: LocalRuntimeStatus?
-    @Published var showExpert = false
     @Published var switchModels: [SwitchableModel] = []
     @Published var routerRunning = false
     @Published var showSwitch = false
@@ -234,7 +219,7 @@ final class LibraryViewModel: ObservableObject {
     var visible: [ManagedModel] {
         // 排序优先级只用来把常用条目排在前面：官方、DeepSeek 官方接口，然后是专家策略指定的本地入口。
         // 本地入口不再有硬编码默认值——策略里没有就用空串（排序里自然落到后面），不会再把某个本地模型当成默认主力。
-        let priority = ["official", "deepseek-flash", preferredLocalID] + Self.localRouteIDs
+        let priority = ["official", "deepseek-flash"]
         return models.filter { $0.archived == showArchived && (showHidden || $0.hidden != true) && (search.isEmpty || "\($0.name) \($0.vendor) \($0.model)".localizedCaseInsensitiveContains(search)) }.sorted {
             let first = priority.firstIndex(of: $0.id) ?? 100
             let second = priority.firstIndex(of: $1.id) ?? 100
@@ -242,12 +227,6 @@ final class LibraryViewModel: ObservableObject {
         }
     }
     var readyCount: Int { models.filter { $0.ready && !$0.archived }.count }
-    var preferredLocalID: String { expertPolicy?.preferredLocal ?? localStatus?.preferredLocal ?? "" }
-    var canLaunchPreferredLocal: Bool { !preferredLocalID.isEmpty && models.contains { $0.id == preferredLocalID && $0.ready && !$0.archived } }
-    var preferredLocalName: String { preferredLocalID.isEmpty ? "未配置" : (canLaunchPreferredLocal ? (models.first { $0.id == preferredLocalID }?.name ?? "未配置") : "已停用") }
-    // 本地入口只有这两条路由；这是路由身份，不是「默认把本地当主力」——默认主力由专家策略决定。
-    static let localRouteIDs = ["s5090-ornith", "s5090-qwen"]
-    func isLocal(_ model: ManagedModel) -> Bool { Self.localRouteIDs.contains(model.id) }
     // 「这个模型是不是已经开着」：官方入口看官方 Codex 进程；其它模型看有没有窗口正跑着它
     // （起始模型就是它），再加上本地实例的状态。以前只查本地实例，所以普通模型明明开着也不亮。
     // Codex 记的是「模型 slug」，助手库里存的是条目 id。三种都对一遍，显示成可读名字。
@@ -260,10 +239,8 @@ final class LibraryViewModel: ObservableObject {
 
     func isRunning(_ model: ManagedModel) -> Bool {
         if model.`protocol` == "oauth" { return officialArchive?.officialRunning == true }
-        if localStatus?.runningInstances.contains(model.id) == true { return true }
         return windows.contains { $0.running == true && $0.initialModel == model.id }
     }
-    func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
 
     // 管道读取结果：子进程的输出必须边跑边收，只等不读会在输出超过管道缓冲时两边一起卡死。
     private final class PipeCollector: @unchecked Sendable {
@@ -322,9 +299,6 @@ final class LibraryViewModel: ObservableObject {
         if let values = response.templates { templates = values }
         if let value = response.revision { revision = value }
         if let value = response.message { message = value }
-        if let policy = response.expertPolicy { expertPolicy = policy }
-        if let usage = response.expertUsage { expertUsage = usage }
-        if let status = response.localStatus { localStatus = status }
         if let values = response.switchModels { switchModels = values }
         if let value = response.routerRunning { routerRunning = value }
         if let values = response.windows { windows = values }
@@ -424,14 +398,6 @@ final class LibraryViewModel: ObservableObject {
         selectedID = id
         success = nil
         message = "连接检查不消耗推理额度；真实验证会发送一条短测试请求。"
-    }
-
-    func openExpert() async {
-        busy = true
-        let response = await call(["expert-status"])
-        accept(response)
-        showExpert = response.ok
-        busy = false
     }
 
     func openSwitch() async {
@@ -603,12 +569,6 @@ final class LibraryViewModel: ObservableObject {
         let diagnosis = await call(["diagnostics"])
         if diagnosis.ok { diagnostics = diagnosis.message ?? "" }
         busy = false
-    }
-
-    func launchPreferredLocal() async {
-        guard canLaunchPreferredLocal else { message = "本地主力已停用，请选择其他可用模型"; success = false; return }
-        selectedID = preferredLocalID
-        await perform("launch")
     }
 
     func perform(_ operation: String) async {

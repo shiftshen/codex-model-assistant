@@ -1,4 +1,3 @@
-import { localAgentInstructions } from "./local-agent-instructions.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 
 export const routerID = "router";
@@ -47,7 +46,7 @@ export function routerTableEntry(table, slug) {
   );
 }
 
-export function modelInfo(route, slug, baseInstructions = "") {
+export function modelInfo(route, slug) {
   const window = resolveContextWindow(route);
   return {
     slug,
@@ -73,14 +72,10 @@ export function modelInfo(route, slug, baseInstructions = "") {
     input_modalities: ["text", "image"],
     supports_search_tool: false,
     supports_parallel_tool_calls: true,
-    base_instructions: baseInstructions,
+    base_instructions: "",
   };
 }
 
-export function routerCatalog(table, localCallers = []) {
-  return {
-    models: table.map(({ slug, route }) =>
-      modelInfo(route, slug, localCallers.includes(route.id) ? localAgentInstructions : ""),
-    ),
-  };
+export function routerCatalog(table) {
+  return { models: table.map(({ slug, route }) => modelInfo(route, slug)) };
 }

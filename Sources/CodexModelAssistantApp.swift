@@ -28,7 +28,6 @@ struct ModelLibraryView: View {
         .sheet(item: $editing) { model in ModelEditor(library: library, draft: model, isNew: !library.models.contains(where: { $0.id == model.id })) }
         .sheet(isPresented: $library.showDiscovery) { discovery }
         .sheet(isPresented: $library.showDiagnostics) { diagnosticsSheet }
-        .sheet(isPresented: $library.showExpert) { ExpertSettingsView(library: library) }
         .sheet(item: $renameTarget) { window in renameSheet(window) }
         .confirmationDialog("确认删除这个单模型窗口？", isPresented: Binding(
             get: { unmanagedDeleteTarget != nil },
@@ -84,14 +83,13 @@ struct ModelLibraryView: View {
                 .help("配置模型、检查连接、看诊断——都在这一个弹窗里")
             Menu {
                 Button("运行诊断") { Task { await library.perform("diagnostics") } }
-                Button("本地优先 / 专家策略") { Task { await library.openExpert() } }
                 Divider()
                 Button("导入模型配置…") { Task { await library.importLibrary() } }
                 Button("导出模型配置…") { Task { await library.exportLibrary() } }
                 Divider()
                 Button("打开数据目录") { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.codex/model-assistant")) }
             } label: { Image(systemName: "ellipsis.circle") }
-            .menuStyle(.borderlessButton).frame(width: 30).help("备份、诊断与专家策略")
+            .menuStyle(.borderlessButton).frame(width: 30).help("备份与诊断")
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
     }
@@ -375,16 +373,10 @@ struct ModelLibraryView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(spacing: 6) {
                                         Text(model.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                                        if model.id == library.preferredLocalID {
-                                            Text("主力").font(.system(size: 9, weight: .bold)).foregroundStyle(.blue).padding(.horizontal, 5).padding(.vertical, 2).background(Color.blue.opacity(0.1), in: Capsule())
-                                        } else if library.isLocal(model) {
-                                            Text("备用").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).padding(.horizontal, 5).padding(.vertical, 2).background(Color.secondary.opacity(0.1), in: Capsule())
-                                        }
                                     }
                                     HStack(spacing: 6) {
                                         Text(model.model.isEmpty ? "尚未选择模型 ID" : model.model).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                                         if library.isRunning(model) { Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.green).help("此 Codex 实例已启动") }
-                                        if library.isLoaded(model) { Image(systemName: "bolt.fill").font(.system(size: 9)).foregroundStyle(.orange).help("Ollama 当前已加载此模型") }
                                     }
                                 }
                                 Spacer(minLength: 4)
@@ -401,8 +393,6 @@ struct ModelLibraryView: View {
             Divider()
             diskSection
             // 窗口不在这个弹窗里管：主界面就是窗口面板，这里只管模型配置。
-            Button { Task { await library.openExpert() } } label: { Label("本地优先 / 专家策略", systemImage: "person.crop.circle.badge.checkmark").frame(maxWidth: .infinity) }
-                .disabled(library.busy)
             Button { editing = ManagedModel.new() } label: { Label("添加模型", systemImage: "plus").frame(maxWidth: .infinity) }
                 .buttonStyle(.borderedProminent).controlSize(.large).disabled(library.busy)
             Toggle("显示归档模型", isOn: $library.showArchived).toggleStyle(.checkbox).font(.caption)
@@ -532,23 +522,10 @@ struct ModelLibraryView: View {
             .foregroundStyle(library.success == false ? Color.red : Color.primary)
             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(library.success == false ? Color.red.opacity(0.07) : Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-            if library.isLocal(model) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Label(model.id == library.preferredLocalID ? "专家策略首选本地模型" : "本地模型（备用）", systemImage: model.id == library.preferredLocalID ? "checkmark.seal.fill" : "moon.zzz")
-                        Spacer()
-                        Text(library.isRunning(model) ? "Codex 已启动" : "Codex 未启动").foregroundStyle(library.isRunning(model) ? .green : .secondary)
-                    }.font(.callout.weight(.semibold))
-                    Text(library.isLoaded(model) ? "Ollama 当前已加载此模型，占用显存。" : "Ollama 当前未常驻加载此模型；只有收到请求时才会载入。").font(.caption).foregroundStyle(.secondary)
-                    Text("同一本地服务的请求排队执行；等待期间保持连接。配置就绪不代表已通过开发能力验收。").font(.caption).foregroundStyle(.secondary)
-                }
-                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            }
             Spacer(minLength: 0)
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "macwindow.on.rectangle").foregroundStyle(.secondary)
-                Text(["s5090-ornith", "s5090-qwen"].contains(model.id) ? "本地服务按请求排队。付费专家调用由策略控制；已归档模型不能启动。" : "只想换模型、继续同一个对话：用「在可切换窗口中打开」，之后在 Codex 顶部的模型选择里直接换，窗口和对话不变。想给某个模型单独一个专用窗口：用「启动 Codex」，旧任务可用「导入原会话并继续」复制一份；副本与原件不会自动同步，任务内容都会发送给所选供应商。").font(.caption).foregroundStyle(.secondary)
+                Text("只想换模型、继续同一个对话：用「在可切换窗口中打开」，之后在 Codex 顶部的模型选择里直接换，窗口和对话不变。想给某个模型单独一个专用窗口：用「启动 Codex」，旧任务可用「导入原会话并继续」复制一份；副本与原件不会自动同步，任务内容都会发送给所选供应商。").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if model.id != "official" { Button(model.archived ? "恢复模型" : "归档") { Task { await library.archive() } } }

@@ -48,7 +48,7 @@ test("seeds mainstream providers without pretending keys exist", async (context)
   assert.ok(data.routes.filter((route) => route.id.startsWith("s5090-")).every((route) => route.protocol === "chat"));
 });
 
-test("local chat bridge preserves expert namespace, call and result history", () => {
+test("local chat bridge preserves MCP namespace, call and result history", () => {
   const tool = { type: "namespace", name: "mcp__paid_expert", tools: [{ type: "function", name: "consult_expert", parameters: { type: "object", properties: {} } }] };
   const converted = toChat({ model: "local", tools: [tool], input: [{ type: "function_call", namespace: "mcp__paid_expert", name: "consult_expert", call_id: "expert1", arguments: "{}" }, { type: "function_call_output", call_id: "expert1", output: "Advice" }] });
   assert.equal(converted.body.tools[0].function.name, "mcp__paid_expert__consult_expert");
@@ -57,58 +57,6 @@ test("local chat bridge preserves expert namespace, call and result history", ()
   const result = fromCompletion({ choices: [{ message: { tool_calls: converted.body.messages[0].tool_calls } }] }, converted.definitions, "chat", "local");
   assert.equal(result.output[0].namespace, "mcp__paid_expert");
   assert.equal(result.output[0].name, "consult_expert");
-});
-
-test("preparing legacy local route migrates only its broken protocol with a backup", async (context) => {
-  const store = await fixture(context);
-  let data = await store.read();
-  const route = data.routes.find((entry) => entry.id === "s5090-ornith");
-  await store.save({ ...route, protocol: "responses" }, data.revision);
-  const service = new ProductService(store);
-  service.check = async () => ({ ok: true });
-  service.gatewayReady = async () => {};
-  const prepared = await service.prepare(route.id);
-  assert.equal(prepared.route.protocol, "chat");
-  const metadata = JSON.parse(await fs.readFile(path.join(prepared.homePath, "model-catalog.json"), "utf8"));
-  assert.match(metadata.models[0].base_instructions, /Continue executing/);
-  const config = await fs.readFile(path.join(prepared.homePath, "config.toml"), "utf8");
-  assert.match(config, /mcp_servers.paid_expert.tools.consult_expert/);
-  assert.match(config, /approval_mode = "approve"/);
-  data = await store.read();
-  assert.equal(data.routes.find((entry) => entry.id === "deepseek-flash").protocol, "responses");
-  assert.equal((await fs.readdir(path.join(store.root, "backups"))).length, 2);
-  await service.prepare(route.id);
-  assert.equal((await store.read()).revision, data.revision);
-});
-
-test("local runtime status reports preferred worker and optional live state", async (context) => {
-  const store = await fixture(context);
-  const target = await listen(http.createServer((request, response) => {
-    assert.equal(request.url, "/api/ps");
-    response.end(JSON.stringify({ models: [{ name: "actual-remote-model" }] }));
-  }), context);
-  const data = await store.read();
-  await store.mutate(data.revision, (library) => {
-    for (const route of library.routes.filter((route) => route.id.startsWith("s5090-"))) route.endpoint = `${target}/v1`;
-    return library;
-  });
-  const status = await new ProductService(store).localRuntimeStatus();
-  assert.equal(status.preferredLocal, "s5090-ornith");
-  assert.deepEqual(status.localCallers, ["s5090-ornith", "s5090-qwen"]);
-  assert.ok(Array.isArray(status.runningInstances));
-  assert.deepEqual(status.loadedModels, ["actual-remote-model"]);
-  assert.match(status.message, /Ollama|当前/);
-});
-
-test("unreachable runtime is unknown rather than falsely unloaded", async (context) => {
-  const store = await fixture(context);
-  const target = await listen(http.createServer((_request, response) => { response.writeHead(503); response.end(); }), context);
-  const data = await store.read();
-  await store.mutate(data.revision, (library) => {
-    for (const route of library.routes.filter((route) => route.id.startsWith("s5090-"))) route.endpoint = `${target}/v1`;
-    return library;
-  });
-  assert.match((await new ProductService(store).localRuntimeStatus()).message, /状态未知/);
 });
 
 test("key changes stay private, empty keeps key, clearing removes it", async (context) => {

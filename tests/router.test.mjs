@@ -44,11 +44,12 @@ test("可切换窗口收录第三方模型并按模型名生成唯一标识", ()
   assert.equal(routerTableEntry(table, "QWEN3.8:27B-96K").route.id, "local");
   assert.equal(routerTableEntry(table, "local").route.id, "local");
   assert.equal(routerTableEntry(table, "missing"), null);
-  const catalog = routerCatalog(table, ["local"]);
+  const catalog = routerCatalog(table);
   assert.equal(catalog.models.length, 3);
   assert.equal(catalog.models[0].display_name, "模型 a-first");
   assert.deepEqual(catalog.models[0].input_modalities, ["text", "image"]);
-  assert.match(catalog.models[2].base_instructions, /coding agent/);
+  // 本地优先 / 专家策略已移除，目录里不再注入任何内置指令
+  assert.equal(catalog.models[2].base_instructions, "");
   assert.equal(catalog.models[0].base_instructions, "");
 });
 

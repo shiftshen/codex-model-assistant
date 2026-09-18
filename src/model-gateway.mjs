@@ -7,7 +7,6 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelStore } from "./model-store.mjs";
 import { LocalQueue } from "./local-queue.mjs";
-import { localAgentInstructions } from "./local-agent-instructions.mjs";
 import { buildRouterTable, routerID, routerTableEntry } from "./router.mjs";
 import { toChat, toAnthropic, fromCompletion, responseEvents, createResponseStream, nativePayload } from "./protocol-adapter.mjs";
 import { anthropicStreamParser, chatStreamParser } from "./stream-parsers.mjs";
@@ -451,7 +450,6 @@ export function createGateway(store = new ModelStore(), options = {}) {
         }
       }
 
-      if (["s5090-ornith", "s5090-qwen"].includes(route.id) && !payload.instructions?.includes(localAgentInstructions)) payload.instructions = `${localAgentInstructions}\n\n${payload.instructions || ""}`;
       const key = await store.secret(route.credentialID);
       const busyKey = localConcurrencyKey(route);
       if (payload.stream && route.protocol !== "responses" && !response.headersSent) {

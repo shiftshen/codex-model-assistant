@@ -27,7 +27,7 @@ swiftc \
   -o "$APP/Contents/MacOS/CodexModelAssistant"
 
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
-cp "$ROOT"/src/*.mjs "$APP/Contents/Resources/runtime/"
+rsync -a --delete "$ROOT"/src/ "$APP/Contents/Resources/runtime/"
 ARCH="$(uname -m)"
 [[ "$ARCH" == "x86_64" ]] && ARCH="x64"
 NODE_ROOT="$ROOT/.runtime-cache/node-v24.20.0-darwin-$ARCH"
