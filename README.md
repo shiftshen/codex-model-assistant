@@ -30,6 +30,7 @@ Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11
 - 依赖官方 ChatGPT/Codex Windows 桌面应用；自动通过 AppX/MSIX 清单发现，找不到时可用 `CMA_CODEX_DESKTOP` 指定可执行文件。
 - Windows 包自带 `sqlite3.exe`；窗口共享目录使用 NTFS junction，单文件优先 hard link，不要求管理员创建普通 symlink。
 - GitHub Actions 在 `windows-latest` 上运行 Node 回归测试并生成 NSIS 安装版与 portable `.exe`。
+- Windows Release 同时提供 `SHA256SUMS-windows.txt`，由 Windows Runner 对最终 `.exe` 逐个计算 SHA-256，便于下载后核验。
 - Windows Preview 暂无 Authenticode 代码签名证书，因此首次下载可能出现 Microsoft Defender SmartScreen 提示；这和应用内部功能是否正常是两回事。
 - Windows 自动化、打包和纯函数行为由 CI 验证；Microsoft Store/MSIX 客户端在不同机器上的真实 GUI 行为仍欢迎用户反馈。详细说明见 `windows/README.md`。
 
