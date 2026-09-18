@@ -265,6 +265,15 @@ struct ModelLibraryView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5, 4])).foregroundStyle(.secondary.opacity(0.35)))
     }
 
+    // 「我的请求到底走了谁」：用户对扣费最直接的疑问，摊在状态条上，不用去翻日志。
+    private var recentHostSummary: String? {
+        guard !library.recentRoutes.isEmpty else { return nil }
+        var counts: [String: Int] = [:]
+        for entry in library.recentRoutes { counts[entry.host, default: 0] += 1 }
+        let parts = counts.sorted { $0.value > $1.value }.map { "\($0.key) ×\($0.value)" }
+        return "最近 \(library.recentRoutes.count) 次：\(parts.joined(separator: "、"))"
+    }
+
     private var statusBar: some View {
         HStack(spacing: 12) {
             Image(systemName: "internaldrive").foregroundStyle(.secondary).font(.caption)
@@ -277,6 +286,10 @@ struct ModelLibraryView: View {
                 }
             } else {
                 Text("点「检查占用」算出可回收多少").font(.caption).foregroundStyle(.secondary)
+            }
+            if let summary = recentHostSummary {
+                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .help("最近几次请求实际打到的上游域名。想核对扣费方，看这一行。")
             }
             if library.busy { ProgressView().controlSize(.small) }
             Spacer()
@@ -359,6 +372,19 @@ struct ModelLibraryView: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("运行诊断").font(.title2.bold())
             Text(library.diagnostics).font(.body).textSelection(.enabled).lineSpacing(8)
+            if !library.recentRoutes.isEmpty {
+                Divider()
+                Text("最近请求的上游").font(.callout.weight(.semibold))
+                ForEach(library.recentRoutes) { entry in
+                    HStack(spacing: 10) {
+                        Text(entry.at.suffix(15).prefix(8)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(entry.host).font(.system(size: 11, design: .monospaced))
+                        if entry.fallback == true { Text("备用").font(.system(size: 10, weight: .bold)).foregroundStyle(.orange) }
+                        Spacer()
+                        Text(entry.name ?? entry.route).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
             HStack {
                 Button("修复工作窗口") { Task { await library.callRepairAndRefreshDiagnostics() } }.disabled(library.busy)
                 Spacer()

@@ -1,5 +1,9 @@
 import http from "node:http";
 import fs from "node:fs";
+// 注意：node:fs 是回调版。之前两个「留痕」函数用 await fs.readFile/fs.writeFile 写文件，
+// 这两个调用会直接抛 TypeError（缺 callback），又被外层 catch{} 吞掉——
+// 结果是记录一条都没写下来，而调用方以为成功了。写文件一律用 promises 版。
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -241,6 +245,24 @@ function isOpencodeEndpoint(endpoint) {
 // 今天就发生过一次——opencode 因为缺一个请求头全部失败，几百次请求全部落到
 // DeepSeek 官方按量扣费，用户只看到「官网的量一直在涨」，却不知道是谁在花。
 // 所以每一次 fallback 都必须留痕：标准输出 + 一个供界面读取的事件文件。
+// 每个请求实际走了哪个上游，都要留一条记录。
+// 用户问「我的钱到底花在谁那儿」时，靠推理和日志都太绕——这条记录是直接答案：
+// 最近 N 次请求分别打到了哪个域名、用的哪个条目。
+export async function noteRoute(root, route, { model = "", fallback = false } = {}) {
+  let host = "";
+  try { host = new URL(route.endpoint).hostname; } catch { host = route.endpoint || ""; }
+  const entry = { at: new Date().toISOString(), route: route.id, name: route.name, host, model, fallback };
+  try {
+    const file = path.join(root, "route-log.json");
+    let list = [];
+    try { list = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
+    if (!Array.isArray(list)) list = [];
+    list.push(entry);
+    await fsPromises.writeFile(file, JSON.stringify(list.slice(-100), null, 2), { mode: 0o600 });
+  } catch { }
+  return entry;
+}
+
 export async function noteFallback(root, from, to, reason) {
   const entry = {
     at: new Date().toISOString(),
@@ -252,10 +274,10 @@ export async function noteFallback(root, from, to, reason) {
   try {
     const file = path.join(root, "fallback-events.json");
     let list = [];
-    try { list = JSON.parse(await fs.readFile(file, "utf8")); } catch { }
+    try { list = JSON.parse(await fsPromises.readFile(file, "utf8")); } catch { }
     if (!Array.isArray(list)) list = [];
     list.push(entry);
-    await fs.writeFile(file, JSON.stringify(list.slice(-50), null, 2), { mode: 0o600 });
+    await fsPromises.writeFile(file, JSON.stringify(list.slice(-50), null, 2), { mode: 0o600 });
   } catch { }
   return entry;
 }
@@ -510,6 +532,11 @@ export function createGateway(store = new ModelStore(), options = {}) {
       for (const candidate of candidates) {
         const target = candidate.route;
         const targetKey = candidate.key ?? (await store.secret(target.credentialID));
+        // 「这次请求要打给谁」写在真正发起调用之前。
+        // 放在响应之后写会有两个毛病：一是客户端拿到响应时记录可能还没落盘（测试与界面都会读到空），
+        // 二是中途失败就什么都不留下——而用户核对扣费方，靠的正是这条记录。
+        if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")));
+        await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0 });
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);
@@ -569,8 +596,6 @@ export function createGateway(store = new ModelStore(), options = {}) {
                 response.end();
               }
             }
-            // 不是首选条目 = 用了备用。这两条的计费方通常不是一个账户，必须让用户看得见。
-            if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")));
             served = true;
             break;
           } catch (error) {

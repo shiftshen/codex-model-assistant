@@ -6,6 +6,7 @@ import { limitedJSON } from "./model-gateway.mjs";
 import { legacyWindowID } from "./window-registry.mjs";
 import { applyCleanup, applyOfficialArchived, cleanupPlan, describePlan, diskUsage, officialArchivedPlan } from "./disk-cleanup.mjs";
 import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
+import { readRecentRoutes } from "./product-service.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 
 const store = new ModelStore();
@@ -55,6 +56,21 @@ async function main() {
   // 侧边栏点一个模型：开着的窗口优先复用，官方入口开真官方。
   if (command === "open-codex") return service.openCodex(id || "");
   if (command === "delete-unmanaged-window") return service.deleteUnmanagedWindow(id || "");
+  // 「我的请求到底走了谁」：直接列最近若干次请求的实际上游。
+  if (command === "recent-routes") {
+    const routes = await readRecentRoutes(store.root, Number(id) > 0 ? Number(id) : 10);
+    const hostCount = {};
+    for (const entry of routes) hostCount[entry.host] = (hostCount[entry.host] || 0) + 1;
+    return {
+      ...(await readRecentRoutes(store.root, 10)),
+      ok: true,
+      routes,
+      hostCount,
+      message: routes.length
+        ? `最近 ${routes.length} 次请求：${Object.entries(hostCount).map(([h, n]) => `${h} ×${n}`).join("、")}`
+        : "还没有记录（网关重启后才会开始记录）",
+    };
+  }
   if (command === "continue") return service.launch(id, { continueExisting: true });
   if (command === "switch-status") return service.switchSummary();
   if (command === "windows") return service.switchSummary();

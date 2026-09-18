@@ -175,6 +175,17 @@ async function requireCodexApp() {
   }
 }
 
+// 网关每次请求都会写一条「走了谁」，这里读出来给界面用。
+export async function readRecentRoutes(root, limit = 8) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(root, "route-log.json"), "utf8"));
+    if (!Array.isArray(list)) return [];
+    return list.slice(-limit).reverse();
+  } catch {
+    return [];
+  }
+}
+
 export class ProductService {
   constructor(store = new ModelStore()) {
     this.store = store;
@@ -652,6 +663,7 @@ export class ProductService {
       // 最近发生过的「静默改用备用模型」。备用条目的计费方可能完全不同，
       // 界面必须能把它摆到用户面前，而不是只躺在日志里。
       fallbacks: await readFallbackEvents(this.store.root),
+      recentRoutes: await readRecentRoutes(this.store.root),
       switchModels: table.map(({ slug, route }) => ({ id: route.id, slug, name: route.name, model: route.model, vendor: route.vendor, protocol: route.protocol })),
       unmanaged: await this.unmanagedWindows(),
       windows: await Promise.all(registry.windows.map(async (entry) => ({
