@@ -131,6 +131,8 @@ test("修复工作窗口会补齐侧边栏项目分组，且重复执行不再�
   sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT, metadata TEXT, position INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER);");
   sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE project_roots(project_id TEXT, position INTEGER, path TEXT, PRIMARY KEY(project_id, position, path));");
   sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE thread_sections(id TEXT PRIMARY KEY, name TEXT, appearance TEXT);");
+  // 工作窗口里确实有这条会话：分组才有意义（归属指向不存在的会话时不该进侧边栏）。
+  sql(path.join(paths.homePath, "state_5.sqlite"), "INSERT INTO threads(id, title) VALUES ('thread-1', '会话一');");
   // 这就是分组丢失的现场：任务库在、全局状态里一个项目也没有
   await fs.writeFile(stateFile, JSON.stringify({ "local-projects": {} }));
 
@@ -155,6 +157,44 @@ test("修复工作窗口会补齐侧边栏项目分组，且重复执行不再�
   assert.equal(second.globalState.projects, 1);
   assert.equal(second.globalState.assignments, 1);
   assert.equal(await fs.readFile(stateFile, "utf8"), carried);
+});
+
+// 新建的窗口没有任何对话。此时把来源的项目元数据整套并进来，侧边栏会列出一串
+// 「暂无聊天」的空项目，看起来就像会话被弄丢了。
+test("新建的空窗口不会被塞进一堆没有对话的项目", async (context) => {
+  const store = await fixture(context);
+  const service = new ProductService(store);
+  const paths = service.switchPaths();
+  const stateFile = path.join(paths.homePath, ".codex-global-state.json");
+  await fs.mkdir(path.join(paths.homePath, "sessions"), { recursive: true });
+  sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, model_provider TEXT, model TEXT, title TEXT, cwd TEXT, project_id TEXT, thread_section_id TEXT);");
+  sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT, metadata TEXT, position INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER);");
+  sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE project_roots(project_id TEXT, position INTEGER, path TEXT, PRIMARY KEY(project_id, position, path));");
+  sql(path.join(paths.homePath, "state_5.sqlite"), "CREATE TABLE thread_sections(id TEXT PRIMARY KEY, name TEXT, appearance TEXT);");
+  await fs.writeFile(stateFile, JSON.stringify({ "local-projects": {} }));
+
+  const sourceHome = path.join(store.root, "continuations-v1", "deepseek-flash", "codex-home");
+  await fs.mkdir(sourceHome, { recursive: true });
+  await fs.writeFile(path.join(sourceHome, ".codex-global-state.json"), JSON.stringify({
+    "local-projects": {
+      "proj-a": { id: "proj-a", name: "Playground 2", rootPaths: ["/Users/test/playground"] },
+      "proj-b": { id: "proj-b", name: "Tiktok", rootPaths: ["/Users/test/tiktok"] },
+    },
+    "thread-project-assignments": { "thread-1": { projectId: "proj-a" }, "thread-2": { projectId: "proj-b" } },
+    "project-order": ["proj-a", "proj-b"],
+    "pinned-project-ids": ["proj-b"],
+  }));
+
+  const report = await service.repairSwitchWindowMetadata("deepseek-flash");
+  assert.equal(report.globalState.projects, 0, "窗口里一条会话都没有，就不该出现项目");
+  assert.equal(report.globalState.assignments, 0);
+  assert.match(report.message, /清掉 2 个没有对话的空项目/);
+  const state = JSON.parse(await fs.readFile(stateFile, "utf8"));
+  // 空且原本不存在的键可以不写（已有的写入逻辑就是如此），所以只看「没有残留内容」。
+  assert.deepEqual(state["local-projects"] ?? {}, {});
+  assert.deepEqual(state["thread-project-assignments"] ?? {}, {});
+  assert.deepEqual(state["project-order"] ?? [], []);
+  assert.deepEqual(state["pinned-project-ids"] ?? [], []);
 });
 
 test("统一工作窗口会把指定模型已有会话补进来，首次未建库时返回待初始化", async (context) => {

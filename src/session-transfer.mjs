@@ -22,6 +22,16 @@ async function tableColumns(database, table) {
   return Array.isArray(names) ? names : [];
 }
 
+// 本窗口任务库里真实存在的会话 id。「这个项目还有没有对话」全靠它判断：
+// 归属指向一个不存在的会话时，侧边栏就会出现只有项目名、点开空空的假象。
+export async function readThreadIDs(homePath) {
+  const database = path.join(homePath, "state_5.sqlite");
+  if (!(await exists(database))) return new Set();
+  if (!(await tableColumns(database, "threads")).includes("id")) return new Set();
+  const ids = JSON.parse((await sqlite(database, "SELECT json_group_array(id) FROM threads;")) || "[]");
+  return new Set((Array.isArray(ids) ? ids : []).map((id) => String(id)));
+}
+
 async function sameColumns(leftDB, rightDB, table) {
   const [left, right] = await Promise.all([tableColumns(leftDB, table), tableColumns(rightDB, table)]);
   return left.length && left.join() === right.join();
@@ -104,10 +114,13 @@ export async function mergeGlobalProjectState(sources, destination, options = {}
     projectsDeduped: 0,
     assignmentsAdded: 0,
     assignmentsSkipped: 0,
+    assignmentsPruned: 0,
+    projectsPruned: 0,
     assignmentsRemapped: 0,
     orderEntriesAdded: 0,
     orderEntriesRemoved: 0,
     pinnedAdded: 0,
+    pinnedRemoved: 0,
     legacyMappingsAdded: 0,
     wrote: false,
   };
@@ -119,6 +132,17 @@ export async function mergeGlobalProjectState(sources, destination, options = {}
   const appearances = { ...asObject(state["project-appearances"]) };
   const writableRoots = { ...asObject(state["thread-writable-roots"]) };
   const rootHints = { ...asObject(state["thread-workspace-root-hints"]) };
+
+  // 传了 existingThreads 就按「本窗口真的有这条会话」过滤：没传则保持原来的「只增不改」行为。
+  const existingThreads = options.existingThreads instanceof Set ? options.existingThreads : null;
+  const threadAlive = (id) => !existingThreads || existingThreads.has(String(id));
+  if (existingThreads) {
+    for (const threadID of Object.keys(assignments)) {
+      if (threadAlive(threadID)) continue;
+      delete assignments[threadID];
+      report.assignmentsPruned += 1;
+    }
+  }
 
   const identityOwner = new Map();
   const dropped = new Map();
@@ -164,6 +188,8 @@ export async function mergeGlobalProjectState(sources, destination, options = {}
       if (!value || typeof value !== "object") continue;
       const mapped = remap(value.projectId);
       if (!mapped) continue;
+      // 本窗口没有这条会话就别写归属，否则会留下一个点开空空的项目名。
+      if (!threadAlive(threadID)) { report.assignmentsSkipped += 1; continue; }
       if (assignments[threadID]) { report.assignmentsSkipped += 1; continue; }
       assignments[threadID] = { ...value, projectId: mapped };
       report.assignmentsAdded += 1;
@@ -200,12 +226,33 @@ export async function mergeGlobalProjectState(sources, destination, options = {}
     }
   }
 
-  // 被合并掉的项目不能继续留在排序与固定列表里。
-  const filteredOrder = projectOrder.filter((id) => !dropped.has(id));
+  // 一个会话都没落上的项目直接去掉：留着只会在侧边栏显示成「暂无聊天」的空项目。
+  // 只有按本窗口会话过滤时才做，避免在「只增不改」的调用里误删用户已有分组。
+  const empty = new Set();
+  if (existingThreads) {
+    const used = new Set(Object.values(assignments).map((value) => remap(value.projectId)));
+    for (const id of Object.keys(projects)) {
+      if (used.has(id)) continue;
+      empty.add(id);
+      delete projects[id];
+    }
+    report.projectsPruned = empty.size;
+  }
+
+  // 被合并掉或被清空的项目不能继续留在排序与固定列表里。
+  const filteredOrder = projectOrder.filter((id) => !dropped.has(id) && !empty.has(id));
   report.orderEntriesRemoved = projectOrder.length - filteredOrder.length;
   projectOrder = filteredOrder;
   for (const [id] of Object.entries(projects)) {
     if (!projectOrder.includes(id)) { projectOrder.push(id); report.orderEntriesAdded += 1; }
+  }
+  // 「置顶」和外观也不能留空项目，否则置顶区同样只剩一个空名字。
+  const keptPinned = pinned.filter((id) => !dropped.has(id) && !empty.has(id));
+  report.pinnedRemoved = pinned.length - keptPinned.length;
+  pinned.length = 0;
+  pinned.push(...keptPinned);
+  for (const id of Object.keys(appearances)) {
+    if (empty.has(id) || dropped.has(id)) delete appearances[id];
   }
 
   const next = { ...state };
@@ -349,7 +396,8 @@ export async function repairProjectMetadata(sources, destination) {
   }
   report.reassignedThreads = await backfillThreadProjects(state);
   try {
-    report.globalState = await mergeGlobalProjectState(sources, destination, { before: report.globalBefore });
+    // 带上本窗口真实存在的会话：只有真有对话的项目才该出现在侧边栏。
+    report.globalState = await mergeGlobalProjectState(sources, destination, { before: report.globalBefore, existingThreads: await readThreadIDs(destination) });
   } catch (error) {
     report.globalState = { destination, error: error.message, wrote: false, before: report.globalBefore, after: report.globalBefore };
   }
@@ -415,7 +463,8 @@ export async function importConversations(sources, destination, options = {}) {
   // 会话导入只补 SQLite；桌面端左侧的项目分组在全局状态里，必须一起补，否则会全部掉进「最近」。
   report.globalBefore = await inspectGlobalProjectState(destination);
   try {
-    report.globalState = await mergeGlobalProjectState(sources, destination, { before: report.globalBefore });
+    // 导入完成后本窗口已经有这些会话了，同样按「真有会话」过滤，别留空项目。
+    report.globalState = await mergeGlobalProjectState(sources, destination, { before: report.globalBefore, existingThreads: await readThreadIDs(destination) });
   } catch (error) {
     report.globalState = { destination, error: error.message, wrote: false, before: report.globalBefore, after: report.globalBefore };
   }

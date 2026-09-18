@@ -22,8 +22,11 @@ chmod 600 "$PLIST"
 plutil -lint "$PLIST"
 launchctl bootout "gui/$(id -u)/local.shift.codex-model-gateway" 2>/dev/null || true
 pkill -x CodexModelAssistant 2>/dev/null || true
+# 旧版本备份放到 ~/.codex/model-assistant/backups 下，不要把 /Applications 堆满 .backup-* 目录。
+BACKUPS="$HOME/.codex/model-assistant/backups"
+mkdir -p "$BACKUPS"
 if [[ -d "$TARGET" ]]; then
-  mv "$TARGET" "$TARGET.backup-$(date +%Y%m%d-%H%M%S)"
+  mv "$TARGET" "$BACKUPS/Codex 模型助手-$(date +%Y%m%d-%H%M%S).app"
 fi
 ditto "$ROOT/build/Codex 模型助手.app" "$TARGET"
 codesign --verify --deep --strict "$TARGET"
@@ -33,10 +36,8 @@ codesign --verify --deep --strict "$TARGET"
 touch "$TARGET"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET" || true
 
-# 只保留最近 5 份旧版本备份，免得 /Applications 里堆一堆 .backup-* 目录。
-ls -1d "$TARGET".backup-* 2>/dev/null | sort | head -n -5 | while IFS= read -r stale; do
-  rm -rf "$stale"
-done
+# /Applications 里只留一个应用：清掉历史遗留的 .backup-*，备份目录只留最近 2 份。
+"$TARGET/Contents/Resources/node" "$ROOT/scripts/prune-app-backups.mjs" "$TARGET" "$BACKUPS" 2
 
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "$TARGET"

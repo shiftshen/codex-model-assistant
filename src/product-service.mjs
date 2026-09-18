@@ -28,6 +28,7 @@ import {
   inspectConversationStore,
   inspectGlobalProjectState,
   mergeGlobalProjectState,
+  readThreadIDs,
   repairProjectMetadata,
   snapshotConversations,
 } from "./session-transfer.mjs";
@@ -495,7 +496,9 @@ export class ProductService {
     // 启动前补项目分组：此刻没有 Codex 进程持有全局状态，不会被内存态写回覆盖。
     let globalState = null;
     try {
-      globalState = await mergeGlobalProjectState(await this.switchWindowSources("all"), paths.homePath);
+      // 只把「本窗口真有会话」的项目并进来：新窗口还没有任何对话时，
+      // 否则侧边栏会列出一串点开空空的项目名（用户看到的就是「只剩项目名字」）。
+      globalState = await mergeGlobalProjectState(await this.switchWindowSources("all"), paths.homePath, { existingThreads: await readThreadIDs(paths.homePath) });
     } catch (error) {
       globalState = { destination: paths.homePath, error: error.message, wrote: false };
     }
@@ -732,6 +735,54 @@ export class ProductService {
     }
     return importConversations(await this.switchWindowSources(target), homePath, { model, provider: routerProviderID });
   }
+  // 侧边栏里「点开空空的项目」：归属指向了本窗口根本不存在的会话。
+  // 新建窗口最容易踩到——它一句对话都没有，却继承了整份项目元数据。
+  // 这里逐个窗口按「本窗口真实存在的会话」重算，把空项目清掉；不动官方库。
+  async pruneEmptyProjects({ dryRun = false } = {}) {
+    const homes = [];
+    for (const slot of ["continuations-v1", windowsRootName]) {
+      let names = [];
+      try { names = await fs.readdir(path.join(this.store.root, slot)); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      for (const name of names.sort()) homes.push({ id: String(name), slot, home: path.join(this.store.root, slot, name, "codex-home") });
+    }
+    homes.push({ id: legacyWindowID, slot: "router-v1", home: windowPaths(this.store.root, legacyWindowID).homePath });
+    const sources = await this.switchWindowSources("all");
+    const windows = [];
+    let prunedProjects = 0;
+    let prunedAssignments = 0;
+    for (const entry of homes) {
+      try {
+        await fs.access(path.join(entry.home, ".codex-global-state.json"));
+      } catch {
+        windows.push({ id: entry.id, slot: entry.slot, skipped: "还没有全局状态，没东西可清" });
+        continue;
+      }
+      const existingThreads = await readThreadIDs(entry.home);
+      const result = await mergeGlobalProjectState(sources, entry.home, { existingThreads, dryRun });
+      prunedProjects += result.projectsPruned ?? 0;
+      prunedAssignments += result.assignmentsPruned ?? 0;
+      windows.push({
+        id: entry.id,
+        slot: entry.slot,
+        threads: existingThreads.size,
+        // after 是 inspectGlobalProjectState 的计数结果，这里本来就是数字。
+        projects: Number(result.after?.projects ?? 0),
+        prunedProjects: result.projectsPruned ?? 0,
+        prunedAssignments: result.assignmentsPruned ?? 0,
+      });
+    }
+    const touched = windows.filter((entry) => entry.prunedProjects).length;
+    return {
+      windows,
+      prunedProjects,
+      prunedAssignments,
+      dryRun,
+      message: prunedProjects
+        ? `${dryRun ? "预计" : "已"}清掉 ${prunedProjects} 个没有对话的空项目、${prunedAssignments} 条指向不存在会话的归属，涉及 ${touched} 个窗口`
+        : "所有窗口的项目分组都只包含真实存在的会话，无需处理",
+    };
+  }
   async repairSwitchWindowMetadata(target = "all") {
     const { homePath } = this.switchPaths();
     const report = await repairProjectMetadata(await this.switchWindowSources(target), homePath);
@@ -743,6 +794,8 @@ export class ProductService {
     if (addedProjects || addedRoots) parts.push(`补入 ${addedProjects} 个项目、${addedRoots} 条目录映射`);
     if (reassignedThreads) parts.push(`为 ${reassignedThreads} 条会话补回项目归属`);
     if (global.wrote) parts.push(`补入 ${global.projectsAdded || 0} 个侧边栏分组、${global.assignmentsAdded || 0} 条会话归属（去重 ${global.projectsDeduped || 0} 个重复项目）`);
+    // 空项目是「只剩项目名字、点开没聊天」的元凶，修掉多少要说清楚。
+    if (global.projectsPruned) parts.push(`清掉 ${global.projectsPruned} 个没有对话的空项目`);
     const changed = Boolean(parts.length);
     const running = (await this.runningWindows()).has(legacyWindowID);
     return {

@@ -199,9 +199,11 @@ test("磁盘治理：剩余空间按容量算，APFS 上不能把 10% 报成 80%
   const { stdout } = await execFileAsync("/bin/df", ["-k", "/"]);
   const columns = String(stdout).trim().split("\n").at(-1).split(/\s+/);
   const expected = (Number(columns[3]) / Number(columns[1])) * 100;
-  assert.ok(Math.abs(disk.freePercent - expected) < 0.01, `剩余比例应按容量算：得到 ${disk.freePercent}，应为 ${expected}`);
+  // 两次 df 之间磁盘还会有少量读写，所以留 1 个百分点的余量；
+  // 要抓的回归是把 free/(used+free) 当分母（本机 10% 会算成 80%）那种量级的错。
+  assert.ok(Math.abs(disk.freePercent - expected) < 1, `剩余比例应按容量算：得到 ${disk.freePercent}，应为 ${expected}`);
   assert.ok(disk.freePercent <= 100);
-  assert.equal(disk.freeBytes, Number(columns[3]) * 1024);
+  assert.ok(Math.abs(disk.freeBytes - Number(columns[3]) * 1024) < 2 * 1024 ** 3);
 });
 
 test("磁盘治理：占用统计把每窗口的数字汇总出来", async (context) => {

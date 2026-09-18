@@ -79,6 +79,8 @@ async function main() {
   if (command === "delete-window") return service.deleteWindow(id);
   // 接管在跑但没登记进注册表的窗口（并发建窗时代可能留下的孤儿进程）。
   if (command === "adopt-window") return service.adoptWindows(id || "all");
+  // 清掉「只有项目名字、点开没聊天」的空分组（归属指向了本窗口不存在的会话）。
+  if (command === "prune-empty-projects") return service.pruneEmptyProjects({ dryRun: process.argv.includes("--dry-run") });
   // 磁盘治理：先看占用、再看计划，最后必须显式 --confirm 才真删。三件事拆开，避免误删。
   if (command === "disk-usage" || command === "cleanup-plan" || command === "cleanup-apply") {
     const root = store.root;
