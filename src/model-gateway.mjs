@@ -413,7 +413,7 @@ function localConcurrencyKey(route) {
 export function createGateway(store = new ModelStore(), options = {}) {
   const localQueue = new LocalQueue();
   let inflight = 0;
-  return http.createServer(async (request, response) => {
+  const server = http.createServer(async (request, response) => {
     const abort = new AbortController();
     let release = () => {};
     let heartbeat;
@@ -657,6 +657,16 @@ export function createGateway(store = new ModelStore(), options = {}) {
       inflight -= 1;
     }
   });
+  // 出厂就挂一个 error 监听。以前这个监听只在主程序块里挂，于是：
+  // 任何别处创建的 server 只要端口被占用，Node 就会以「Unhandled 'error' event」直接崩，
+  // 日志里留下一堆吓人的栈（历史日志里那 117 次就是这么来的）。
+  // 现在结构上保证不会存在没有监听的 server。
+  server.on("error", (error) => {
+    // 主程序块会自己处理（它会探测 /health 并优雅退出），这里只在没人管的时候兜底。
+    if (server.listenerCount("error") > 1) return;
+    process.stderr.write(`模型网关出错：${error?.code || error?.name || "未知"} — ${error?.message || error}\n`);
+  });
+  return server;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -679,7 +689,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           }
         } catch { }
       }
-      process.stderr.write(`${error?.stack || error}\n`);
+      // 不打印原始堆栈：那会被当成「程序崩了」，而实际上只是端口被占。
+      process.stderr.write(`端口 ${gatewayPort} 被占用，但健康检查没能确认是本机网关（${error?.code || error?.message}）。请检查是否有残留的网关进程。\n`);
       process.exit(1);
     })();
   });
