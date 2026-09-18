@@ -139,3 +139,48 @@ test("按天累计：今天每个上游各收到多少次请求", async (context
   const summary = await new ProductService(store).switchSummary();
   assert.equal(summary.todayUsage.total, 3);
 });
+
+// 压缩摘要是「上下文最大的那次请求」，同样真花钱，而且它绕过了路由候选循环。
+// 之前它完全不在账上——用户问「今天请求都去了谁」时会漏掉这笔。
+test("压缩摘要的请求也记账，否则对账是漏的", async (context) => {
+  const store = await fixture(context);
+  let summaryHits = 0;
+  const upstreamURL = await listen(http.createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      const isSummary = /上下文压缩/.test(body);
+      if (isSummary) summaryHits += 1;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ choices: [{ message: { content: isSummary ? "摘要内容" : "OK" } }], usage: {} }));
+    });
+  }), context);
+  await store.read();
+  await store.save({ id: "small", name: "小窗口", endpoint: upstreamURL, protocol: "chat", model: "small", contextWindow: 100000, credentialID: "small" }, 1, "k1");
+  const gateway = await listen(createGateway(store), context);
+  const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
+  const history = [];
+  for (let index = 0; index < 20; index += 1) {
+    history.push({ role: "user", content: [{ type: "input_text", text: `第 ${index} 轮：${"x".repeat(20000)}` }] });
+    history.push({ role: "assistant", content: [{ type: "input_text", text: `第 ${index} 轮完成` }] });
+  }
+  const response = await fetch(`${gateway}/router/v1/responses`, {
+    method: "POST", headers,
+    body: JSON.stringify({ model: "small", input: history, stream: false, max_output_tokens: 100 }),
+  });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.ok(summaryHits >= 1, "应该真的发生过一次摘要请求");
+
+  const report = await waitFor(async () => {
+    const list = await readUsageReport(store.root, 1);
+    const entry = list.at(-1);
+    return entry && entry.summaries && Object.keys(entry.summaries).length ? entry : null;
+  });
+  // noteRoute 记的是 hostname（不含端口），别拿 host 去比
+  const host = new URL(upstreamURL).hostname;
+  assert.ok((report.summaries[host] ?? 0) >= 1, `摘要请求要单独计数：${JSON.stringify(report)}`);
+  assert.ok(report.total >= 2, "摘要 + 正文都该算进总数");
+  const routes = await readRecentRoutes(store.root);
+  assert.ok(routes.some((entry) => entry.kind === "summary"), "滚动记录里也要能看出哪笔是摘要");
+});

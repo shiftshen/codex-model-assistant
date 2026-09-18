@@ -63,7 +63,9 @@ async function main() {
     const lines = report.map((entry) => {
       const hosts = Object.entries(entry.hosts).map(([h, n]) => `${h} ×${n}`).join("、") || "无请求";
       const fb = Object.entries(entry.fallbacks).map(([h, n]) => `${h} ×${n}`).join("、");
-      return `${entry.day}：${entry.total} 次 —— ${hosts}${fb ? `（其中备用：${fb}）` : "（无备用）"}`;
+      const sm = Object.entries(entry.summaries ?? {}).map(([h, n]) => `${h} ×${n}`).join("、");
+      const notes = [fb ? `备用：${fb}` : "无备用", sm ? `含压缩摘要：${sm}` : ""].filter(Boolean).join("，");
+      return `${entry.day}：${entry.total} 次 —— ${hosts}（${notes}）`;
     });
     return { ok: true, report, message: lines.join("\n") || "还没有记录" };
   }

@@ -196,6 +196,9 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
       suffix = "messages";
       summaryBody = toAnthropic(toChat(request).body);
     }
+    // 摘要请求同样会真花钱，而且带着整段历史（上下文最大的请求）。
+    // 它绕过了上面那个路由候选循环，所以必须单独记一笔——否则「今天请求都去了谁」是漏的。
+    await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary" });
     const result = await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
     const body = await limitedJSON(result.body, responseLimitBytes);
     if (summarizer.protocol === "chat") summary = String(body?.choices?.[0]?.message?.content ?? "").trim();
@@ -248,10 +251,10 @@ function isOpencodeEndpoint(endpoint) {
 // 每个请求实际走了哪个上游，都要留一条记录。
 // 用户问「我的钱到底花在谁那儿」时，靠推理和日志都太绕——这条记录是直接答案：
 // 最近 N 次请求分别打到了哪个域名、用的哪个条目。
-export async function noteRoute(root, route, { model = "", fallback = false } = {}) {
+export async function noteRoute(root, route, { model = "", fallback = false, kind = "request" } = {}) {
   let host = "";
   try { host = new URL(route.endpoint).hostname; } catch { host = route.endpoint || ""; }
-  const entry = { at: new Date().toISOString(), route: route.id, name: route.name, host, model, fallback };
+  const entry = { at: new Date().toISOString(), route: route.id, name: route.name, host, model, fallback, kind };
   try {
     const file = path.join(root, "route-log.json");
     let list = [];
@@ -269,12 +272,14 @@ export async function noteRoute(root, route, { model = "", fallback = false } = 
     if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
     const now = new Date();
     const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const bucket = data[day] && typeof data[day] === "object" ? data[day] : { hosts: {}, fallbacks: {} };
+    const bucket = data[day] && typeof data[day] === "object" ? data[day] : { hosts: {}, fallbacks: {}, summaries: {} };
     bucket.hosts = { ...(bucket.hosts || {}) };
     bucket.fallbacks = { ...(bucket.fallbacks || {}) };
+    bucket.summaries = { ...(bucket.summaries || {}) };
     const key = host || "(无域名)";
     bucket.hosts[key] = (bucket.hosts[key] || 0) + 1;
     if (fallback) bucket.fallbacks[key] = (bucket.fallbacks[key] || 0) + 1;
+    if (kind === "summary") bucket.summaries[key] = (bucket.summaries[key] || 0) + 1;
     data[day] = bucket;
     // 只留最近 60 天，避免无限长
     const days = Object.keys(data).sort();

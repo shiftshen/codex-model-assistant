@@ -196,6 +196,7 @@ export async function readUsageReport(root, days = 1) {
       day,
       hosts: data[day]?.hosts ?? {},
       fallbacks: data[day]?.fallbacks ?? {},
+      summaries: data[day]?.summaries ?? {},
       total: Object.values(data[day]?.hosts ?? {}).reduce((sum, n) => sum + Number(n || 0), 0),
     }));
   } catch {
