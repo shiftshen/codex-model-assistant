@@ -27,5 +27,16 @@ if [[ -d "$TARGET" ]]; then
 fi
 ditto "$ROOT/build/Codex 模型助手.app" "$TARGET"
 codesign --verify --deep --strict "$TARGET"
+
+# 刚 ditto 过来的新副本在 LaunchServices 里还是旧记录，Finder 会把它当成普通文件夹。
+# 不能用 SetFile -a B：Finder 附加信息会让 codesign 报 detritus 并让签名校验失败。
+touch "$TARGET"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET" || true
+
+# 只保留最近 5 份旧版本备份，免得 /Applications 里堆一堆 .backup-* 目录。
+ls -1d "$TARGET".backup-* 2>/dev/null | sort | head -n -5 | while IFS= read -r stale; do
+  rm -rf "$stale"
+done
+
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "$TARGET"
