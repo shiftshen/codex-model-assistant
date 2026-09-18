@@ -12,7 +12,7 @@ import {
   repairProjectMetadata,
   snapshotConversations,
 } from "../src/session-transfer.mjs";
-import { sqliteSync } from "./test-platform.mjs";
+import { isWindowsTest, sqliteSync } from "./test-platform.mjs";
 
 const route = { id: "deepseek-flash", model: "deepseek-flash" };
 const sql = sqliteSync;
@@ -210,7 +210,7 @@ test("侧边栏分组：空工作窗口也能补出项目、归属与顺序", as
   assert.equal(state["thread-project-assignments"]["thread-1"].projectId, "proj-a");
   assert.deepEqual(state["project-order"], ["proj-a"]);
   assert.equal(state["thread-writable-roots"]["thread-1"], "/Users/test/alpha");
-  assert.equal((await fs.stat(path.join(destination, globalStateName))).mode & 0o777, 0o600);
+  if (!isWindowsTest) assert.equal((await fs.stat(path.join(destination, globalStateName))).mode & 0o777, 0o600);
 });
 
 test("侧边栏分组只增不改：工作窗口已有的项目不被来源改写", async (context) => {

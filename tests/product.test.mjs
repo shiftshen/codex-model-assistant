@@ -11,7 +11,7 @@ import { createGateway, upstream, estimateTokens, contextBudget } from "../src/m
 import { staleDays } from "../src/disk-cleanup.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { sqliteTestBinary } from "./test-platform.mjs";
+import { isWindowsTest, sqliteTestBinary } from "./test-platform.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,7 +68,7 @@ test("key changes stay private, empty keeps key, clearing removes it", async (co
   assert.equal(await store.secret("deepseek"), "test-private-value");
   await store.save({ ...route, name: "Updated" }, 2, "");
   assert.equal(await store.secret("deepseek"), "test-private-value");
-  assert.equal((await fs.stat(path.join(store.root, "credentials/deepseek"))).mode & 0o777, 0o600);
+  if (!isWindowsTest) assert.equal((await fs.stat(path.join(store.root, "credentials/deepseek"))).mode & 0o777, 0o600);
   assert.ok(!JSON.stringify(await store.publicData()).includes("test-private-value"));
   for (const file of await fs.readdir(path.join(store.root, "backups"))) assert.ok(!(await fs.readFile(path.join(store.root, "backups", file), "utf8")).includes("test-private-value"));
   await store.save(route, 3, "", true);

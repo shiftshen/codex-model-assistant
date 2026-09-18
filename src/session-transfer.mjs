@@ -429,7 +429,8 @@ export async function importConversations(sources, destination, options = {}) {
     const links = [];
     for (const row of pending) {
       const relative = path.relative(source, row.path);
-      if (!/^(sessions|archived_sessions)\//.test(relative) || relative.split(path.sep).includes("..")) { summary.missingFiles++; continue; }
+      const portableRelative = relative.split(path.sep).join("/");
+      if (!/^(sessions|archived_sessions)\//.test(portableRelative) || portableRelative.split("/").includes("..") || path.isAbsolute(relative)) { summary.missingFiles++; continue; }
       const target = path.join(destination, relative);
       try {
         const original = await fs.lstat(row.path);
@@ -519,7 +520,8 @@ export async function snapshotConversations(source, destination, route) {
     let imported = 0;
     for (const row of rows) {
       const relative = path.relative(source, row.path);
-      if (!/^(sessions|archived_sessions)\//.test(relative) || relative.split(path.sep).includes("..")) {
+      const portableRelative = relative.split(path.sep).join("/");
+      if (!/^(sessions|archived_sessions)\//.test(portableRelative) || portableRelative.split("/").includes("..") || path.isAbsolute(relative)) {
         throw new Error(`会话路径不在原任务库内：${row.id}`);
       }
       const target = path.join(staging, relative);

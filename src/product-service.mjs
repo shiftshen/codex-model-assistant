@@ -97,7 +97,7 @@ export function runningInstancesFromPS(output, root) {
 export function parseRunningSlots(output, root) {
   const normalizedOutput = normalizeProcessText(output);
   const rawRoot = String(root ?? "");
-  const resolvedRoot = /^[A-Za-z]:[\\/]/.test(rawRoot) ? rawRoot : path.resolve(rawRoot);
+  const resolvedRoot = (/^[A-Za-z]:[\\/]/.test(rawRoot) || rawRoot.startsWith("/")) ? rawRoot : path.resolve(rawRoot);
   const escapedRoot = normalizeProcessText(resolvedRoot).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
     `--user-data-dir=${escapedRoot}/(?:(instances-v2|continuations-v1|${windowsRootName})/([^/]+)|router-v1)/browser-data`,
@@ -132,7 +132,7 @@ export function parseRunningWindows(output, root) {
 // 误判成「官方在跑」会让我们白拒绝清理，误判成「没在跑」则会去动正在使用的官方库，两个方向都要防。
 export function parseOfficialRunning(output, root) {
   const rawRoot = String(root ?? "");
-  const resolvedRoot = /^[A-Za-z]:[\\/]/.test(rawRoot) ? rawRoot : path.resolve(rawRoot);
+  const resolvedRoot = (/^[A-Za-z]:[\\/]/.test(rawRoot) || rawRoot.startsWith("/")) ? rawRoot : path.resolve(rawRoot);
   const managedRoot = normalizeProcessText(resolvedRoot);
   const found = [];
   for (const original of String(output ?? "").split("\n")) {
@@ -141,6 +141,8 @@ export function parseOfficialRunning(output, root) {
     const macMain = /\/Codex\.app\/Contents\/MacOS\/ChatGPT(\s|$)/.test(line);
     const windowsMain = /\/(ChatGPT|Codex)\.exe[\"']?(\s|$)/i.test(line);
     if (!macMain && !windowsMain) continue;
+    // 主进程没有 Chromium renderer/crashpad 的子进程参数；这些不能算官方窗口。
+    if (/\s--type=/.test(line) || /\s--database=/.test(line)) continue;
     // 带自定义资料目录的都是助手窗口，官方那一个是不带这个参数的。
     if (line.includes("--user-data-dir=")) continue;
     if (line.includes(managedRoot)) continue;
