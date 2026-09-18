@@ -189,7 +189,9 @@ final class LibraryViewModel: ObservableObject {
     private var revision = 0
     var selected: ManagedModel? { models.first { $0.id == selectedID } }
     var visible: [ManagedModel] {
-        let priority = ["official", "deepseek-flash", expertPolicy?.preferredLocal ?? "s5090-ornith", "s5090-ornith", "s5090-qwen"]
+        // 排序优先级只用来把常用条目排在前面：官方、DeepSeek 官方接口，然后是专家策略指定的本地入口。
+        // 本地入口不再有硬编码默认值——策略里没有就用空串（排序里自然落到后面），不会再把某个本地模型当成默认主力。
+        let priority = ["official", "deepseek-flash", preferredLocalID] + Self.localRouteIDs
         return models.filter { $0.archived == showArchived && (showHidden || $0.hidden != true) && (search.isEmpty || "\($0.name) \($0.vendor) \($0.model)".localizedCaseInsensitiveContains(search)) }.sorted {
             let first = priority.firstIndex(of: $0.id) ?? 100
             let second = priority.firstIndex(of: $1.id) ?? 100
@@ -200,7 +202,9 @@ final class LibraryViewModel: ObservableObject {
     var preferredLocalID: String { expertPolicy?.preferredLocal ?? localStatus?.preferredLocal ?? "" }
     var canLaunchPreferredLocal: Bool { !preferredLocalID.isEmpty && models.contains { $0.id == preferredLocalID && $0.ready && !$0.archived } }
     var preferredLocalName: String { preferredLocalID.isEmpty ? "未配置" : (canLaunchPreferredLocal ? (models.first { $0.id == preferredLocalID }?.name ?? "未配置") : "已停用") }
-    func isLocal(_ model: ManagedModel) -> Bool { ["s5090-ornith", "s5090-qwen"].contains(model.id) }
+    // 本地入口只有这两条路由；这是路由身份，不是「默认把本地当主力」——默认主力由专家策略决定。
+    static let localRouteIDs = ["s5090-ornith", "s5090-qwen"]
+    func isLocal(_ model: ManagedModel) -> Bool { Self.localRouteIDs.contains(model.id) }
     func isRunning(_ model: ManagedModel) -> Bool { localStatus?.runningInstances.contains(model.id) == true }
     func isLoaded(_ model: ManagedModel) -> Bool { localStatus?.loadedModels.contains(model.model) == true }
 

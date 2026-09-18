@@ -374,7 +374,7 @@ struct ModelLibraryView: View {
             if library.isLocal(model) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Label(model.id == library.preferredLocalID ? "当前本地主力" : "备用本地模型", systemImage: model.id == library.preferredLocalID ? "checkmark.seal.fill" : "moon.zzz")
+                        Label(model.id == library.preferredLocalID ? "专家策略首选本地模型" : "本地模型（备用）", systemImage: model.id == library.preferredLocalID ? "checkmark.seal.fill" : "moon.zzz")
                         Spacer()
                         Text(library.isRunning(model) ? "Codex 已启动" : "Codex 未启动").foregroundStyle(library.isRunning(model) ? .green : .secondary)
                     }.font(.callout.weight(.semibold))
