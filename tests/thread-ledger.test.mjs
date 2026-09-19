@@ -192,7 +192,7 @@ test("活跃对话：thread_settings 缺模型时，只用同 sessionId 的 rout
   assert.equal(rows[0].routeName, "opencodeDS");
   assert.equal(rows[0].billing.kind, "quota");
   assert.equal(rows[0].scopeKey, "router");
-  assert.match(rows[0].homePath, /router-v1\/codex-home$/);
+  assert.equal(path.normalize(rows[0].homePath), path.join(root, "router-v1", "codex-home"));
 });
 
 test("活跃对话：太久没动的对话不回报", async (context) => {
