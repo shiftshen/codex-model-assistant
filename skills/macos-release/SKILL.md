@@ -1,3 +1,8 @@
+---
+name: macos-release
+description: Automatically use this skill when packaging, signing, notarizing, stapling, verifying, or publishing a macOS desktop application. Covers SwiftUI, Tauri, Electron, Python sidecars, Developer ID, notarytool, DMG, updater artifacts, Windows companion CI, tags, and GitHub Release verification without exposing private signing credentials.
+---
+
 # macOS Release Skill
 
 用于将 SwiftUI、Tauri、Electron 或其它 macOS 桌面项目从“本机能运行”提升到可公开分发的正式发布包。

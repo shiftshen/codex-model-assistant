@@ -94,8 +94,8 @@ Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Previe
 ## 开发与安装
 
 ```bash
-git clone https://github.com/shiftshen/codex-model-assistant.git
-cd codex-model-assistant
+git clone https://github.com/shiftshen/model-router.git
+cd model-router
 npm test
 zsh scripts/fetch-runtime.sh
 zsh scripts/install-v2.sh
