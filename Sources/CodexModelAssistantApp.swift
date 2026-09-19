@@ -452,7 +452,7 @@ struct ModelLibraryView: View {
                 else { emptyState }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 940, height: 600)
+        .frame(width: 1120, height: 700)
     }
 
     private func renameSheet(_ window: WorkWindow) -> some View {
@@ -517,59 +517,110 @@ struct ModelLibraryView: View {
     }
 
     private var modelSidebar: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Codex 模型助手").font(.headline)
-                    Text("MODEL ROUTER · \(bundleVersion)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("模型库").font(.headline)
+                    Text("\(library.visible.count) 个显示 · \(library.readyCount) 个可用").font(.caption).foregroundStyle(.secondary)
                 }
-            }.padding(.top, 8)
-            TextField("搜索模型或供应商", text: $library.search).textFieldStyle(.roundedBorder)
-            HStack {
-                Text(library.showArchived ? "已归档" : "模型库").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Text("\(library.visible.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Button { editing = ManagedModel.new() } label: { Image(systemName: "plus") }
+                    .buttonStyle(.borderedProminent).controlSize(.small).help("添加模型")
             }
+
+            TextField("搜索名称 / 供应商 / 模型 ID", text: $library.search)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 8) {
+                Menu {
+                    Toggle("显示归档模型", isOn: $library.showArchived)
+                    Toggle("显示隐藏条目", isOn: $library.showHidden)
+                } label: {
+                    Label(library.showArchived || library.showHidden ? "筛选已开启" : "全部常用模型", systemImage: "line.3.horizontal.decrease.circle")
+                }
+                .menuStyle(.borderlessButton)
+                Spacer()
+                if library.busy { ProgressView().controlSize(.small) }
+            }
+            .font(.caption)
+
+            Divider()
+
             ScrollView {
-                LazyVStack(spacing: 4) {
+                LazyVStack(spacing: 6) {
                     ForEach(library.visible) { model in
                         Button { library.select(model.id) } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: model.icon).foregroundStyle(model.color).frame(width: 28)
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: model.icon)
+                                    .foregroundStyle(model.color)
+                                    .frame(width: 26, height: 26)
+                                    .background(model.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(spacing: 6) {
                                         Text(model.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                        if library.isRunning(model) {
+                                            Circle().fill(Color.green).frame(width: 6, height: 6).help("此 Codex 实例已启动")
+                                        }
                                     }
-                                    HStack(spacing: 6) {
-                                        Text(model.model.isEmpty ? "尚未选择模型 ID" : model.model).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                                        if library.isRunning(model) { Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.green).help("此 Codex 实例已启动") }
-                                    }
+                                    Text(model.vendor).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                                    Text(model.model.isEmpty ? "尚未选择模型 ID" : model.model)
+                                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                                 }
-                                Spacer(minLength: 4)
-                                if !model.ready { Image(systemName: "wrench.and.screwdriver").font(.caption).foregroundStyle(.secondary) }
+                                Spacer(minLength: 8)
+                                if !model.ready {
+                                    Image(systemName: "wrench.and.screwdriver").font(.caption).foregroundStyle(.orange)
+                                }
                             }
-                            .padding(10).contentShape(Rectangle())
-                            .background(library.selectedID == model.id ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                            .padding(.horizontal, 10).padding(.vertical, 9)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .background(library.selectedID == model.id ? Color.accentColor.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(library.selectedID == model.id ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.08)))
                         }
-                        .buttonStyle(.plain).accessibilityLabel("选择 \(model.name)").disabled(library.busy)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("选择 \(model.name)")
+                        .disabled(library.busy)
                     }
-                    if library.visible.isEmpty { Text("没有匹配的模型").foregroundStyle(.secondary).padding(.top, 30) }
+                    if library.visible.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+                            Text("没有匹配的模型").foregroundStyle(.secondary)
+                        }.padding(.top, 30)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxHeight: .infinity)
+
+            Divider()
+            compactDiskBar
+        }
+        .padding(14)
+        .frame(width: 360)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var compactDiskBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "internaldrive").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                if let disk = library.disk {
+                    Text("助手目录 \(humanBytes(disk.totalBytes)) · 可回收 \(humanBytes(disk.reclaimable))")
+                        .font(.caption2.weight(.semibold)).lineLimit(1)
+                    Text("系统剩余 \(Int(disk.freeDiskPercent.rounded()))%")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("磁盘占用未检查").font(.caption2.weight(.semibold))
                 }
             }
-            Divider()
-            diskSection
-            // 窗口不在这个弹窗里管：主界面就是窗口面板，这里只管模型配置。
-            Button { editing = ManagedModel.new() } label: { Label("添加模型", systemImage: "plus").frame(maxWidth: .infinity) }
-                .buttonStyle(.borderedProminent).controlSize(.large).disabled(library.busy)
-            Toggle("显示归档模型", isOn: $library.showArchived).toggleStyle(.checkbox).font(.caption)
-            Toggle("显示隐藏条目", isOn: $library.showHidden).toggleStyle(.checkbox).font(.caption)
-            Text("\(library.readyCount) 个配置就绪 · 同一本地服务请求排队执行").font(.caption).foregroundStyle(.secondary)
-            Button { showModels = false } label: { Label("完成", systemImage: "checkmark").frame(maxWidth: .infinity) }
-                .keyboardShortcut(.cancelAction)
-                .help("关闭模型库，回到窗口面板（按 Esc 也行）")
+            Spacer()
+            Button("检查") { Task { await library.refreshDisk() } }.controlSize(.mini).disabled(library.busy)
+            if (library.disk?.reclaimable ?? 0) > 0 {
+                Button("清理") { library.showCleanupConfirm = true }.controlSize(.mini).disabled(library.busy)
+            }
         }
-        .padding(16).frame(width: 270).background(Color(nsColor: .controlBackgroundColor))
+        .padding(.top, 2)
     }
 
     // 磁盘：同一批会话在每个窗口各存一份，是这套多开机制最容易失控的地方，所以放在侧边栏常驻可见。
@@ -657,7 +708,7 @@ struct ModelLibraryView: View {
     }
 
     private func modelDetail(_ model: ManagedModel) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(model.vendor).font(.callout).foregroundStyle(.secondary)
