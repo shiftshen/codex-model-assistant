@@ -249,15 +249,9 @@ async function main() {
   if (command === "enable-switching") return { ...(await service.setSwitching(id, true)), ...(await store.publicData()) };
   if (command === "disable-switching") return { ...(await service.setSwitching(id, false)), ...(await store.publicData()) };
   if (command === "setup-official") {
-    // 幂等：把官方模型作为隐藏条目加进工作窗口，账号和额度仍由官方 ChatGPT 登录决定。
-    const catalog = [["官方 · GPT-6 Astra", "gpt-6-astra"], ["官方 · GPT-5.6 Sol", "gpt-5.6-sol"], ["官方 · GPT-5.6 Terra", "gpt-5.6-terra"], ["官方 · GPT-5.6 Luna", "gpt-5.6-luna"], ["官方 · GPT-5.5", "gpt-5.5"]];
-    for (const [name, model] of catalog) {
-      const routeID = `official-${model.replace(/[^a-z0-9]+/g, "-")}`;
-      const data = await store.read();
-      const existing = data.routes.find((entry) => entry.id === routeID);
-      await store.save({ ...(existing || {}), id: routeID, name, vendor: "OpenAI（官方登录）", protocol: "chatgpt", model, hidden: true, archived: false, contextWindow: existing?.contextWindow || resolveContextWindow({ model }), fallback: existing?.fallback ?? "" }, data.revision);
-    }
-    return { ...(await store.publicData()), message: `官方模型已加入工作窗口（默认隐藏）：${catalog.map((entry) => entry[1]).join("、")}` };
+    // 兼容旧入口：历史版本会创建 official-gpt-* 隐藏条目，现已废弃。
+    // ModelStore.read() 会自动迁移删除；这里不再重新创建，官方只保留唯一的本机 Codex 入口。
+    return { ...(await store.publicData()), message: "官方入口已统一为「本机 Codex」：模型请在原版 Codex 顶部选择。" };
   }
   if (command === "set-fallback") {
     const data = await store.read();

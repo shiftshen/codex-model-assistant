@@ -8,6 +8,10 @@ import { resolveContextWindow, usableWindow } from "./model-windows.mjs";
 export const defaultRoot = path.join(os.homedir(), ".codex/model-assistant");
 export const validID = (id) => typeof id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(id);
 
+export function isLegacyOfficialProxy(route) {
+  return String(route?.id ?? "").startsWith("official-") && route?.protocol === "chatgpt";
+}
+
 export async function atomicJSON(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -93,7 +97,7 @@ export function validateRoute(input) {
 
 function seeds() {
   const routes = [
-    { id: "official", name: "OpenAI · ChatGPT 登录", vendor: "OpenAI", model: "gpt-6-astra", protocol: "oauth", noKey: true },
+    { id: "official", name: "本机 Codex（官方）", vendor: "OpenAI 官方", model: "gpt-6-astra", protocol: "oauth", noKey: true },
     ...templates.filter((entry) => entry.id !== "custom").map((entry) => ({ ...entry, id: entry.id === "deepseek" ? "deepseek-flash" : entry.id, vendor: entry.name, credentialID: entry.id })),
     { id: "deepseek-pro", name: "DeepSeek Pro", vendor: "DeepSeek 官方", model: "deepseek-v4-pro", protocol: "responses", endpoint: "https://api.deepseek.com/v1", credentialID: "deepseek" },
     { id: "agnes", name: "Agnes 2.5 Flash", vendor: "已有服务", model: "agnes-2.5-flash", protocol: "responses", endpoint: "http://127.0.0.1:18790/v1" },
@@ -109,8 +113,41 @@ export class ModelStore {
     try {
       const data = JSON.parse(await fs.readFile(this.file, "utf8"));
       if (data.schemaVersion !== 2 || !Array.isArray(data.routes)) throw new Error("模型库版本不兼容");
-      data.routes = data.routes.map(validateRoute);
+      const before = structuredClone(data);
+      const validated = data.routes.map(validateRoute);
+      const legacyOfficialIDs = new Set(validated.filter(isLegacyOfficialProxy).map((route) => route.id));
+      let migrated = legacyOfficialIDs.size > 0;
+      data.routes = validated
+        .filter((route) => !legacyOfficialIDs.has(route.id))
+        .map((route) => {
+          const next = { ...route };
+          if (next.id === "official") {
+            if (next.name !== "本机 Codex（官方）" || next.vendor !== "OpenAI 官方") migrated = true;
+            next.name = "本机 Codex（官方）";
+            next.vendor = "OpenAI 官方";
+            next.hidden = false;
+            next.archived = false;
+            next.switchable = false;
+            next.fallback = "";
+          } else if (legacyOfficialIDs.has(next.fallback)) {
+            next.fallback = "";
+            migrated = true;
+          }
+          return next;
+        });
       if (new Set(data.routes.map((route) => route.id)).size !== data.routes.length) throw new Error("模型库标识重复");
+      if (migrated) {
+        data.revision = Math.max(1, Number(data.revision) || 1) + 1;
+        await atomicJSON(path.join(this.root, "backups", `library-before-official-cleanup-${Date.now()}-${randomUUID()}.json`), before);
+        await atomicJSON(this.file, data);
+        for (const id of legacyOfficialIDs) {
+          await Promise.all([
+            fs.rm(path.join(this.root, "checks", `${id}.json`), { force: true }),
+            fs.rm(path.join(this.root, "tokens", id), { force: true }),
+            fs.rm(path.join(this.root, "credentials", id), { force: true }),
+          ]).catch(() => {});
+        }
+      }
       return data;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;

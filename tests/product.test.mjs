@@ -47,6 +47,35 @@ test("seeds mainstream providers without pretending keys exist", async (context)
   assert.ok(data.routes.every((route) => !route.hasKey));
   assert.equal(data.routes.find((route) => route.id === "deepseek-flash").endpoint, "https://api.deepseek.com/v1");
   assert.ok(data.routes.filter((route) => route.id.startsWith("s5090-")).every((route) => route.protocol === "chat"));
+  assert.equal(data.routes.find((route) => route.id === "official").name, "本机 Codex（官方）");
+});
+
+test("升级会自动删除旧 official-gpt-* 代理，只保留唯一的本机 Codex 官方入口", async (context) => {
+  const store = await fixture(context);
+  const data = await store.read();
+  const oldOfficial = validateRoute({
+    id: "official-gpt-5-6-sol",
+    name: "官方 · GPT-5.6 Sol",
+    vendor: "OpenAI（官方登录）",
+    protocol: "chatgpt",
+    model: "gpt-5.6-sol",
+    hidden: true,
+  });
+  const deepseek = data.routes.find((route) => route.id === "deepseek-flash");
+  data.routes.push(oldOfficial);
+  data.routes[data.routes.findIndex((route) => route.id === deepseek.id)] = { ...deepseek, fallback: oldOfficial.id };
+  await atomicJSON(store.file, data);
+
+  const migrated = await store.read();
+  assert.equal(migrated.routes.some((route) => route.id === oldOfficial.id), false);
+  assert.equal(migrated.routes.find((route) => route.id === "deepseek-flash").fallback, "");
+  const official = migrated.routes.find((route) => route.id === "official");
+  assert.equal(official.name, "本机 Codex（官方）");
+  assert.equal(official.vendor, "OpenAI 官方");
+  assert.equal(official.switchable, false);
+  assert.ok(migrated.revision > data.revision);
+  const backups = await fs.readdir(path.join(store.root, "backups"));
+  assert.ok(backups.some((name) => name.startsWith("library-before-official-cleanup-")));
 });
 
 test("local chat bridge preserves MCP namespace, call and result history", () => {

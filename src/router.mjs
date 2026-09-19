@@ -14,7 +14,7 @@ export function slugifyModel(value) {
 // 可切换窗口只接入网关能转换的第三方接口；官方 ChatGPT 登录自带模型选择，不重复接入。
 export function switchableRoutes(routes) {
   return routes
-    .filter((route) => !route.archived && route.protocol !== "oauth" && Boolean(route.model))
+    .filter((route) => !route.archived && !["oauth", "chatgpt"].includes(route.protocol) && Boolean(route.model))
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id));
 }

@@ -6,8 +6,8 @@ Codex 模型管理与多开工具。macOS 使用原生 SwiftUI；Windows Preview
 
 | | |
 |---|---|
-| 版本 | **2.8.0** |
-| 安装包 | `release/Codex-Model-Assistant-2.8.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **2.8.3** |
+| 安装包 | `release/Codex-Model-Assistant-2.8.3-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；**未做 Apple 公证**，首次打开需右键 → 打开 |
@@ -37,6 +37,7 @@ Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11
 ## 功能
 
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
+- **2.8.3 官方入口唯一化**：官方只保留一个「本机 Codex（官方）」入口。点击它直接启动/激活 `/Applications/Codex.app` 的默认资料，复用你本机已有登录状态、任务库与官方模型选择器；历史 `official-gpt-*` 伪官方条目会自动迁移删除，不再出现在工作窗口模型下拉框。
 - 本地模型（Ollama 上的 Ornith / Qwen）降级为**可选供应商**：未通过开发能力验收，已归档，默认不出现，可在「显示归档模型」里查看；重新评估的条件见 `docs/LOCAL-QUALIFICATION.md`。
 
 - 新增和编辑模型、修改 API Key、供应商模板、模型自动发现、搜索、归档恢复。

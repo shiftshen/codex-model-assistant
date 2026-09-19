@@ -37,6 +37,7 @@ test("可切换窗口收录第三方模型并按模型名生成唯一标识", ()
     route("blank", ""),
     { ...route("local", "qwen3.8:27b-96k"), protocol: "responses" },
     { ...route("official-entry", "gpt-6-astra"), id: "official", protocol: "oauth" },
+    validateRoute({ id: "official-gpt-5-6-sol", name: "旧官方 Sol", vendor: "OpenAI（官方登录）", protocol: "chatgpt", model: "gpt-5.6-sol" }),
   ]);
   assert.deepEqual(table.map((entry) => entry.slug), ["dup", "dup-2", "qwen3.8-27b-96k"]);
   assert.equal(table[0].route.id, "a-first");

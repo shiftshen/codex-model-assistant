@@ -2,7 +2,7 @@
 
 ## 安装与首次启动
 
-将「Codex 模型助手.app」放入 Applications，打开即可。2.8.0 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
+将「Codex 模型助手.app」放入 Applications，打开即可。2.8.3 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
 
 助手首次启动会初始化模型库并启动本机网关。已存在的本机 DeepSeek / Agnes 私有 Key 会迁移一次，不打印明文；全新机器需要用户自行填写 Key。API 供应商与 ChatGPT 订阅分别计费。模型助手本身不代理充值或计费。
 
@@ -17,6 +17,12 @@
 更换 Key：选择模型 →「编辑配置 / Key」→ 输入新 Key → 保存。留空保留现有 Key；勾选清除后移除。通过同一供应商模板建立的模型默认共用 Key，例如 DeepSeek Flash 与 Pro。修改 API 地址时不会把旧 Key 自动带到新的地址，需重新输入。Key 不在编辑界面回显。
 
 已预置 DeepSeek、OpenAI API、Anthropic、Gemini、通义千问、Kimi、GLM、Grok、Mistral、Groq、OpenRouter、Ollama、LM Studio 和自定义模板。模型 ID 示例不是账号权限保证，也不宣称永远为最新。OpenAI 官方 ChatGPT 入口独立保留，不能放入 Agnes 等第三方模型。
+
+### 官方入口就是本机原版 Codex
+
+2.8.3 起，官方只保留一个「本机 Codex（官方）」入口。点击它时助手不会创建独立 `CODEX_HOME`，也不会传 `--user-data-dir`；如果原版 Codex 已经运行，会直接把该进程切到前台，否则按默认资料启动 `/Applications/Codex.app`。因此会复用你已经登录好的 ChatGPT/Codex 账号、原任务库和官方顶部模型选择器。
+
+历史版本创建过的 `官方 · GPT-6 Astra / GPT-5.6 Sol / Terra / Luna / GPT-5.5` 隐藏条目属于旧的代理方案，升级后会自动从模型库清理，并且不再进入工作窗口的模型下拉框。官方模型的具体选择交给原版 Codex 自己，不由助手重复维护。
 
 ## 多开
 

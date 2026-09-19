@@ -35,6 +35,7 @@ import {
   snapshotConversations,
 } from "./session-transfer.mjs";
 import {
+  activateProcess,
   findCodexDesktopExecutable,
   isWindows,
   killGatewayProcesses,
@@ -580,14 +581,16 @@ export class ProductService {
   async launchOfficial() {
     const running = await this.officialCodexRunning();
     if (running.length) {
-      return { official: true, reused: true, pid: running[0].pid, delivered: false, message: `官方 Codex 已经开着（PID ${running[0].pid}），已切到它，没有重复启动。` };
+      const pid = running[0].pid;
+      const activated = await activateProcess(pid);
+      return { official: true, reused: true, pid, delivered: activated, message: activated ? `本机原版 Codex 已经开着（PID ${pid}），已切到前台。` : `本机原版 Codex 已经开着（PID ${pid}），没有重复启动；如未到前台请从 Dock 点一下。` };
     }
     await requireCodexApp();
     const environment = { ...process.env };
     // 关键：不能把助手窗口的变量带过去，否则开出来还是空资料。
     for (const name of ["CODEX_HOME", "CMA_ROUTE_TOKEN", "CODEX_ELECTRON_USER_DATA_PATH", "OPENAI_API_KEY", "OPENAI_BASE_URL", "AGNES_API_KEY", "DEEPSEEK_API_KEY"]) delete environment[name];
     const child = await spawnCodexDesktop([], environment);
-    return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开官方 Codex（默认资料）：就是你平时那个登录状态和任务库。" };
+    return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开本机原版 Codex：复用你原来的登录状态、任务库和官方模型选择器。" };
   }
 
   // 侧边栏点一个模型时的默认动作。原则：已经开着的窗口优先复用，只有确实没有窗口时才新建。
