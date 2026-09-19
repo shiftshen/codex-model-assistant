@@ -26,9 +26,6 @@ struct ModelLibraryView: View {
         }
         .frame(minWidth: 820, minHeight: 580)
         .sheet(isPresented: $showModels) { modelLibrary }
-        .sheet(item: $editing) { model in ModelEditor(library: library, draft: model, isNew: !library.models.contains(where: { $0.id == model.id })) }
-        .sheet(isPresented: $library.showDiscovery) { discovery }
-        .sheet(isPresented: $library.showDiagnostics) { diagnosticsSheet }
         .sheet(item: $renameTarget) { window in renameSheet(window) }
         .confirmationDialog("确认删除这个单模型窗口？", isPresented: Binding(
             get: { unmanagedDeleteTarget != nil },
@@ -99,7 +96,10 @@ struct ModelLibraryView: View {
             Button { showModels = true } label: { Label("模型库（\(library.models.count)）", systemImage: "slider.horizontal.3") }
                 .help("配置模型、检查连接、看诊断——都在这一个弹窗里")
             Menu {
-                Button("运行诊断") { Task { await library.perform("diagnostics") } }
+                Button("运行诊断") {
+                    showModels = true
+                    Task { await library.perform("diagnostics") }
+                }
                 Button("打开 ChatGPT Desktop（官方）") { Task { await library.openCodex("official") } }
                 Divider()
                 Divider()
@@ -453,6 +453,13 @@ struct ModelLibraryView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 1120, height: 700)
+        // 模型库本身已经是 sheet；新增/编辑/发现/诊断必须从当前 sheet 内容继续呈现。
+        // 把这些 presenter 挂在底层主窗口上时，状态会改变但 macOS 不会显示二级 sheet，表现就是按钮“点不动”。
+        .sheet(item: $editing) { model in
+            ModelEditor(library: library, draft: model, isNew: !library.models.contains(where: { $0.id == model.id }))
+        }
+        .sheet(isPresented: $library.showDiscovery) { discovery }
+        .sheet(isPresented: $library.showDiagnostics) { diagnosticsSheet }
     }
 
     private func renameSheet(_ window: WorkWindow) -> some View {

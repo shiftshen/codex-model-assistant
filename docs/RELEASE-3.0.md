@@ -1,5 +1,10 @@
 # Model Router 3.0.0
 
+## 3.0.2 模型库交互修复
+
+- 修复 macOS 模型库右上角“+”添加模型按钮点了无反应。
+- 新增/编辑/发现模型/模型库内诊断的二级 sheet 改由当前模型库 sheet 自己呈现，避免底层主窗口 presenter 被上层 sheet 阻塞。
+
 ## 3.0.1 智能一致性修复
 
 - 所有隔离 Codex 窗口共享全局 `AGENTS.md`、skills、plugins、hooks 和 auth。

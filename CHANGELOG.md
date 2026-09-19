@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.2
+
+### macOS model library
+- Fixed the Add Model (+) and Edit Model actions appearing unresponsive while the model library sheet is open.
+- Moved add/edit/discovery/diagnostics presenters onto the model-library sheet itself so nested sheets are presented by the active macOS view hierarchy.
+- Root diagnostics now opens the model library first and then presents diagnostics from the correct sheet layer.
+
 ## 3.0.1
 
 ### Intelligence consistency
