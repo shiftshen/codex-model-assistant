@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 ROOT="${0:A:h:h}"
-TARGET="/Applications/Codex 模型助手.app"
+TARGET="/Applications/Model Router.app"
+LEGACY_TARGET="/Applications/Codex 模型助手.app"
 RUNTIME="$HOME/.codex/model-assistant/runtime-v2"
 PLIST="$HOME/Library/LaunchAgents/local.shift.codex-model-gateway.plist"
 BACKUPS="$HOME/.codex/model-assistant/backups"
@@ -17,9 +18,12 @@ pkill -x CodexModelAssistant 2>/dev/null || true
 
 # 旧版本备份放到 ~/.codex/model-assistant/backups 下，不要把 /Applications 堆满 .backup-* 目录。
 if [[ -d "$TARGET" ]]; then
-  mv "$TARGET" "$BACKUPS/Codex 模型助手-$(date +%Y%m%d-%H%M%S).app"
+  mv "$TARGET" "$BACKUPS/Model Router-$(date +%Y%m%d-%H%M%S).app"
 fi
-ditto "$ROOT/build/Codex 模型助手.app" "$TARGET"
+if [[ -d "$LEGACY_TARGET" ]]; then
+  mv "$LEGACY_TARGET" "$BACKUPS/Codex 模型助手-legacy-$(date +%Y%m%d-%H%M%S).app"
+fi
+ditto "$ROOT/build/Model Router.app" "$TARGET"
 codesign --verify --deep --strict "$TARGET"
 
 # 刚 ditto 过来的新副本在 LaunchServices 里还是旧记录，Finder 会把它当成普通文件夹。

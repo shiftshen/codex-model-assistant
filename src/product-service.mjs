@@ -77,7 +77,7 @@ export function renderRouterConfig(source, { model, catalogPath }) {
     model,
     provider: routerProviderID,
     catalogPath,
-    name: "Codex 模型助手 · 可切换窗口",
+    name: "Model Router · 可切换窗口",
     baseURL: `${gatewayURL}/router/v1`,
   });
 }
@@ -334,7 +334,7 @@ export class ProductService {
   }
   async discover(route) {
     const checked = validateRoute(route);
-    if (checked.protocol === "oauth") return { models: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"], message: "官方登录模型；实际权限以 Codex 账号为准" };
+    if (checked.protocol === "oauth") return { models: [], message: "官方模型由 ChatGPT Desktop 自己管理，请在原版客户端内选择" };
     const result = await upstream(checked, await this.store.secret(checked.credentialID), "models", null, 15000);
     const data = await limitedJSON(result.body);
     if (!Array.isArray(data.data)) throw new Error("供应商未返回标准模型列表，请手动输入模型 ID");
@@ -343,12 +343,12 @@ export class ProductService {
   async check(id) {
     const route = await this.store.route(id);
     if (route.archived) throw new Error("此模型已归档，请先恢复");
-    if (!route.model) throw new Error("请先选择模型 ID");
     if (route.protocol === "oauth") {
       const auth = JSON.parse(await fs.readFile(path.join(sharedHome, "auth.json"), "utf8"));
-      if (auth.auth_mode !== "chatgpt" || !auth.tokens?.access_token) throw new Error("请先在 Codex 中登录 ChatGPT");
-      return { message: "ChatGPT 已登录；模型权限以实际请求为准" };
+      if (auth.auth_mode !== "chatgpt" || !auth.tokens?.access_token) throw new Error("请先在 ChatGPT Desktop / Codex 中登录 ChatGPT");
+      return { message: "ChatGPT Desktop 已登录；官方模型请在原版客户端内选择" };
     }
+    if (!route.model) throw new Error("请先选择模型 ID");
     const result = await this.discover(route);
     if (!result.models.includes(route.model)) throw new Error("服务可连接，但未返回所选模型；请发现模型并重新选择");
     return { message: "连接正常，模型已列出；尚不等同真实推理验证" };
@@ -357,8 +357,8 @@ export class ProductService {
   async detectProtocol(id, { save = true } = {}) {
     const route = await this.store.route(id);
     if (route.archived) throw new Error("此模型已归档，请先恢复");
+    if (route.protocol === "oauth") return { protocol: "oauth", message: "ChatGPT Desktop 官方入口不需要识别接口", tested: [] };
     if (!route.model) throw new Error("请先选择模型 ID");
-    if (route.protocol === "oauth") return { protocol: "oauth", message: "官方登录入口不需要识别接口", tested: [] };
     const key = await this.store.secret(route.credentialID);
     const probes = {
       responses: { suffix: "responses", body: { model: route.model, input: "ping", max_output_tokens: 16, store: false } },
@@ -436,13 +436,14 @@ export class ProductService {
     }
     // 升级失败（常见于端口被 launchd 托管的旧进程占着，而部署目录还没更新）：只要它还在正常服务就继续用它，
     // 不要把用户挡在门外——真正要换代码时跑一次安装脚本或重启助手即可。
-    if (stale) return { message: `模型网关正在跑旧版本（${stale}），本次沿用它；要切到最新代码请重新运行安装脚本或重启 Codex 助手` };
+    if (stale) return { message: `模型网关正在跑旧版本（${stale}），本次沿用它；要切到最新代码请重新运行安装脚本或重启 Model Router` };
     throw new Error("模型网关未能启动，请查看运行诊断");
   }
   async probe(id) {
     const route = await this.store.route(id);
-    if (route.archived || !route.model) throw new Error("请选择已启用且配置完整的模型");
+    if (route.archived) throw new Error("请选择已启用且配置完整的模型");
     if (route.protocol === "oauth") return this.check(id);
+    if (!route.model) throw new Error("请选择已启用且配置完整的模型");
     await this.gatewayReady();
     const started = Date.now();
     const call = async () => {
@@ -575,7 +576,7 @@ export class ProductService {
         : `「${route.name}」已恢复单模型窗口：关闭这个窗口再启动即可。`,
     };
   }
-  // 官方入口（OpenAI · ChatGPT 登录）要开的必须是官方那一个：默认资料 + ~/.codex。
+  // ChatGPT Desktop（官方）入口必须打开官方默认资料 + ~/.codex。
   // 以前这里也给它造了一个窗口（CODEX_HOME 指向助手目录、--user-data-dir 指向空目录），
   // 结果用户点进去看到的是「欢迎使用 ChatGPT 桌面版」的新手引导——登录状态和任务库全没了。
   async launchOfficial() {
@@ -583,14 +584,14 @@ export class ProductService {
     if (running.length) {
       const pid = running[0].pid;
       const activated = await activateProcess(pid);
-      return { official: true, reused: true, pid, delivered: activated, message: activated ? `本机原版 Codex 已经开着（PID ${pid}），已切到前台。` : `本机原版 Codex 已经开着（PID ${pid}），没有重复启动；如未到前台请从 Dock 点一下。` };
+      return { official: true, reused: true, pid, delivered: activated, message: activated ? `ChatGPT Desktop（官方）已经开着（PID ${pid}），已切到前台。` : `ChatGPT Desktop（官方）已经开着（PID ${pid}），没有重复启动；如未到前台请从 Dock 点一下。` };
     }
     await requireCodexApp();
     const environment = { ...process.env };
     // 关键：不能把助手窗口的变量带过去，否则开出来还是空资料。
     for (const name of ["CODEX_HOME", "CMA_ROUTE_TOKEN", "CODEX_ELECTRON_USER_DATA_PATH", "OPENAI_API_KEY", "OPENAI_BASE_URL", "AGNES_API_KEY", "DEEPSEEK_API_KEY"]) delete environment[name];
     const child = await spawnCodexDesktop([], environment);
-    return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开本机原版 Codex：复用你原来的登录状态、任务库和官方模型选择器。" };
+    return { official: true, reused: false, pid: child.pid, delivered: true, message: "已打开 ChatGPT Desktop（官方）：复用你原来的登录状态、任务库和官方模型选择器。" };
   }
 
   // 侧边栏点一个模型时的默认动作。原则：已经开着的窗口优先复用，只有确实没有窗口时才新建。

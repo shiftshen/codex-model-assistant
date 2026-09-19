@@ -94,7 +94,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 620,
-    title: "Codex Model Assistant · Windows Preview",
+    title: "Model Router · Windows Preview",
     backgroundColor: "#0f1115",
     webPreferences: {
       preload: path.join(here, "preload.cjs"),

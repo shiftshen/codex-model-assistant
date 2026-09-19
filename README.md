@@ -1,13 +1,21 @@
-# Codex 模型助手
+<p align="center">
+  <img src="assets/brand/model-router-hero.png" alt="Model Router · 模型路由助手" width="100%">
+</p>
 
-Codex 模型管理与多开工具。macOS 使用原生 SwiftUI；Windows Preview 使用 Electron 壳，两端复用同一套 Node 模型库、路由、网关、会话与磁盘治理核心。
+# Model Router
+
+**模型路由助手 · ChatGPT Desktop · Codex · Multi-Provider**
+
+面向桌面 AI 工作流的非官方模型路由、多窗口与 provider 管理工具。macOS 使用原生 SwiftUI；Windows Preview 使用 Electron 壳，两端复用同一套 Node 模型库、路由、网关、会话与磁盘治理核心。
+
+> Model Router 不是 OpenAI 官方产品，也不隶属于任何模型供应商。
 
 ## 当前发布版本
 
 | | |
 |---|---|
-| 版本 | **2.8.5** |
-| 安装包 | `release/Codex-Model-Assistant-2.8.5-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.0.0** |
+| 安装包 | `release/Model-Router-3.0.0-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；**未做 Apple 公证**，首次打开需右键 → 打开 |
@@ -23,9 +31,20 @@ zsh scripts/package-release.sh   # 出 dmg、追加 SHA-256；有公证凭据时
 
 兼容性验证记录见 `docs/COMPATIBILITY.md`。
 
+### 品牌资源
+
+- 主 Logo：`assets/brand/model-router-logo.png`
+- App Icon：`assets/brand/model-router-app-icon.png`
+- GitHub / Release Hero：`assets/brand/model-router-hero.png`
+- Brand Guide：`assets/brand/model-router-brand-guide.png`
+- 规范：`docs/BRAND.md`
+- 3.0 发布说明：`docs/RELEASE-3.0.md`
+
+3.0 只修改用户可见品牌；`local.shift.codex-model-assistant`、`~/.codex/model-assistant` 和 `local.shift.codex-model-gateway` 暂时保留，确保 2.x 原有配置、Key、窗口和会话直接升级。
+
 ### Windows Preview
 
-Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11 x64。它不是把 Mac `.app` 改后缀，而是新增 Electron 桌面壳，并把原有核心中的进程发现、窗口关闭、SQLite、磁盘与共享资源行为抽成跨平台实现。
+Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Preview。它不是把 Mac `.app` 改后缀，而是新增 Electron 桌面壳，并把原有核心中的进程发现、窗口关闭、SQLite、磁盘与共享资源行为抽成跨平台实现。
 
 - 依赖官方 ChatGPT/Codex Windows 桌面应用；自动通过 AppX/MSIX 清单发现，找不到时可用 `CMA_CODEX_DESKTOP` 指定可执行文件。
 - Windows 包自带 `sqlite3.exe`；窗口共享目录使用 NTFS junction，单文件优先 hard link，不要求管理员创建普通 symlink。
@@ -37,8 +56,8 @@ Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11
 ## 功能
 
 - 第三方模型库与官方 ChatGPT 登录：DeepSeek 等走各自的官方接口，官方入口用 ChatGPT OAuth，互不影响。
-- **2.8.3 官方入口唯一化**：官方只保留一个「本机 Codex（官方）」入口。点击它直接启动/激活 `/Applications/Codex.app` 的默认资料，复用你本机已有登录状态、任务库与官方模型选择器；历史 `official-gpt-*` 伪官方条目会自动迁移删除，不再出现在工作窗口模型下拉框。
-- **2.8.4 首页固定官方入口**：窗口区第一张卡就是「本机 Codex（官方）」，右上角菜单也有同名入口。不要再靠 Dock 的 ChatGPT/Codex 图标区分，因为官方与可切换窗口来自同一个 App bundle；从这张卡进入就一定走默认资料。
+- **2.8.3 官方入口唯一化**：官方只保留一个「ChatGPT Desktop（官方）」入口。点击它直接启动/激活 `/Applications/Codex.app` 的默认资料，复用你本机已有登录状态、任务库与官方模型选择器；历史 `official-gpt-*` 伪官方条目会自动迁移删除，不再出现在工作窗口模型下拉框。
+- **2.8.4 首页固定官方入口**：窗口区第一张卡就是「ChatGPT Desktop（官方）」，右上角菜单也有同名入口。不要再靠 Dock 的 ChatGPT/Codex 图标区分，因为官方与可切换窗口来自同一个 App bundle；从这张卡进入就一定走默认资料。
 - **2.8.5 模型库重排**：侧栏加宽到 360pt，模型条目改成名称 / 供应商 / 模型 ID 三行信息卡；磁盘区压成底部一行摘要，新增/筛选移到顶部，避免模型列表被磁盘和开关挤到只剩一小条。
 - 本地模型（Ollama 上的 Ornith / Qwen）降级为**可选供应商**：未通过开发能力验收，已归档，默认不出现，可在「显示归档模型」里查看；重新评估的条件见 `docs/LOCAL-QUALIFICATION.md`。
 
@@ -47,7 +66,7 @@ Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11
 - 13 类供应商/本地服务模板及自定义模板；未配置凭据的条目明确显示待配置。
 - 连接检查、真实推理验证、带时间的验证记录；改 Key / 模型 / 地址 / 协议后失效。
 - 每个模型条目独立窗口、任务库和模型配置，多开不修改全局默认模型。
-- 窗口多开：任意数量窗口同时运行，每个窗口自带一份 `CODEX_HOME` 与浏览器数据目录（`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值），互不干扰，也和官方 Codex 的 Electron 状态完全隔离；窗口列表里可以新建、打开、关闭、重命名、删除，底层按平台读取真实进程命令行判定哪个窗口在跑（PID 一并显示）。
+- 窗口多开：任意数量窗口同时运行，每个窗口自带一份 `CODEX_HOME` 与浏览器数据目录（`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值），互不干扰，也和 ChatGPT Desktop（官方）的 Electron 状态完全隔离；窗口列表里可以新建、打开、关闭、重命名、删除，底层按平台读取真实进程命令行判定哪个窗口在跑（PID 一并显示）。
 - 无密钥 JSON 导入导出、原子配置写入、冲突检查、备份、诊断。
 - loopback 网关按实例令牌鉴权；Responses、Chat Completions、Anthropic Messages 三类接口。
 - 每个窗口都能换模型：窗口的 `config.toml` 指向网关的 `cma_router` 路由，Codex 顶部的模型选择就是全部可切换条目（官方登录与已归档模型不在其中），对话和任务库原地保留。窗口注册表 `windows.json` 记录名称与起始模型（槽位 `router` 沿用历史路径 `router-v1/`，新窗口放 `windows-v1/<id>/`），需要旧对话时再手动导入。
@@ -70,7 +89,7 @@ Windows 版当前版本线为 **2.9.0-windows-preview.1**，目标 Windows 10/11
 - 启动窗口前自动清理（默认开、可一键关）：打开窗口时，Codex 还没读任务库之前，把这个窗口里「官方已归档」或「超 30 天」的副本连同缓存清掉。**两类窗口都覆盖**——多开的工作窗口（`windows-v1`/`router-v1`）和每个模型的专用窗口（`instances-v2`/`continuations-v1`），后者才是副本堆得最多的地方。判定规则和手动清理完全一致，原件在官方库里随时能再导入，`~/.codex` 与窗口独有对话一律不动。
 - 例外只有一处：「导入原会话并继续」**第一次**执行的整份快照不会被立刻清掉（否则刚导入就被当成旧副本删了）；之后这个窗口再启动就照常清理。手动模式始终保留：关掉开关就只在点「清理」时删。
 - 运行中的窗口会明说还差多少：侧边栏显示「router 正在运行：还有 5.73 GB 等它关闭后自动清理」，而不是只说一句「正在运行」。这笔钱不算进「可回收」——拿不到的空间不虚报。
-- 官方库的**已归档**会话可以单独清：官方库 `~/.codex` 默认只读，唯一例外是这个需要二次确认的按钮/命令（`cleanup-official-plan` / `cleanup-official-apply --confirm`）。它删的是原件、不可恢复，所以只在官方 Codex 未运行时允许执行，并且只碰 `archived = 1` 的会话——那些只是「超过 30 天」但没归档的一条不动。
+- 官方库的**已归档**会话可以单独清：官方库 `~/.codex` 默认只读，唯一例外是这个需要二次确认的按钮/命令（`cleanup-official-plan` / `cleanup-official-apply --confirm`）。它删的是原件、不可恢复，所以只在 ChatGPT Desktop（官方）未运行时允许执行，并且只碰 `archived = 1` 的会话——那些只是「超过 30 天」但没归档的一条不动。
 
 ## 开发与安装
 
@@ -93,7 +112,7 @@ zsh scripts/package-release.sh
 - `src/model-store.mjs`：模型库、凭据、并发与输入校验。
 - `src/product-service.mjs`：发现、验证、实例准备、启动、诊断。
 - `src/session-transfer.mjs`：会话/项目元数据迁移——任务库合并、导入，以及 `.codex-global-state.json` 的侧边栏项目分组合并（只增不改、按目录去重、原子写入并备份）。
-- 官方入口：OpenAI · ChatGPT 登录 开的是**官方那一个** Codex（默认资料 + `~/.codex`，带着你的登录状态和任务库），不再给它造一个空资料窗口；点其它模型时**已经有窗口在跑就切过去**，只有确实没有窗口才新建。
+- 官方入口：`ChatGPT Desktop（官方）` 打开的是官方桌面应用默认资料（`~/.codex`，带着你的登录状态和任务库），不再给它造一个空资料窗口；点其它模型时**已经有窗口在跑就切过去**，只有确实没有窗口才新建。
 - `src/window-registry.mjs`：窗口注册表（`windows.json`）——窗口标识校验、槽位路径映射、新建编号与名称分配、原子写入 0600。
 - `src/disk-cleanup.mjs`：磁盘治理——副本判定（以官方库为权威）、浏览器缓存白名单、清理计划与执行、审计清单、启动前单窗口自动清理。
 - `src/disk-policy.mjs`：磁盘策略（启动前自动清理 / 清缓存两个开关），带类型校验与版本递增。
@@ -123,6 +142,12 @@ Info.plist 写 14.0 也没用，老系统上根本加载不起来。现在 `buil
 详细的版本兼容性验证记录见 `docs/COMPATIBILITY.md`。
 
 详细使用、数据路径、密钥保护与分发条件见 `docs/USER-GUIDE.md`。本次发行是本机验收的签名发布候选，不将未公证或缺少供应商实测的部分宣称为公共商业分发已完成。
+
+## 品牌与商标说明
+
+Model Router 是独立的非官方项目。ChatGPT、Codex 以及各 provider 名称归各自权利人所有；项目不会使用仿制官方商标作为 Model Router 主品牌，也不暗示任何官方合作、背书或隶属关系。
+
+<p align="center"><img src="assets/brand/model-router-logo.png" alt="Model Router logo" width="520"></p>
 
 ## 协议来源
 

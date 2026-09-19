@@ -84,7 +84,7 @@ jobs:
           Get-Content release-windows/SHA256SUMS-windows.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: Codex-Model-Assistant-Windows-x64
+          name: Model-Router-Windows-x64
           path: |
             release-windows/*.exe
             release-windows/SHA256SUMS-windows.txt
@@ -94,7 +94,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
-          name: Codex Model Assistant ${{ github.ref_name }}
+          name: Model Router ${{ github.ref_name }}
           body: Windows Preview automated x64 build. Core Node tests passed on windows-latest; real Microsoft Store/MSIX desktop behavior still requires user-machine validation.
           files: |
             release-windows/*.exe

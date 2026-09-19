@@ -28,7 +28,7 @@ jobs:
         run: zsh scripts/build-app.sh
       - name: 校验双架构、最低系统与签名
         run: |
-          APP="build/Codex 模型助手.app"
+          APP="build/Model Router.app"
           lipo -archs "$APP/Contents/MacOS/CodexModelAssistant" | grep -q arm64
           lipo -archs "$APP/Contents/MacOS/CodexModelAssistant" | grep -q x86_64
           /usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$APP/Contents/Info.plist" | grep -qx '12.0'

@@ -180,7 +180,7 @@ test("点一个第三方模型时复用已开着的窗口，不再新建", async
 
 // 官方入口点进去必须是官方那一个：默认资料、已登录、任务库是官方的。
 // 以前这里会给官方入口造一个空资料窗口，用户看到的是「欢迎使用 ChatGPT 桌面版」的新手引导。
-test("官方入口开的是真官方 Codex，不复用也不新建空资料窗口", async (context) => {
+test("官方入口打开的是 ChatGPT Desktop 默认资料，不新建空资料窗口", async (context) => {
   const store = await fixture(context);
   const service = new ProductService(store);
   service.officialCodexRunning = async () => [{ pid: 4242, args: "/Applications/Codex.app/Contents/MacOS/ChatGPT" }];

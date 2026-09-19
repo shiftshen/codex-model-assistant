@@ -1,14 +1,14 @@
 #!/bin/zsh
 set -euo pipefail
 ROOT="${0:A:h:h}"
-APP="$ROOT/build/Codex 模型助手.app"
+APP="$ROOT/build/Model Router.app"
 RELEASE="$ROOT/release"
 [[ -x "$APP/Contents/Resources/node" || -x "$APP/Contents/Resources/node-arm64" ]] || { echo "Run fetch-runtime.sh and build-app.sh first" >&2; exit 1; }
 codesign --verify --deep --strict "$APP"
 mkdir -p "$RELEASE"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
-ditto "$APP" "$STAGING/Codex 模型助手.app"
+ditto "$APP" "$STAGING/Model Router.app"
 ln -s /Applications "$STAGING/Applications"
 cp "$ROOT/docs/USER-GUIDE.md" "$STAGING/使用说明.md"
 # 名字跟真实内容走：通用了就写 universal，别再叫 arm64 骗人。
@@ -19,8 +19,8 @@ case "$APP_ARCHS" in
   *) ARCH="arm64" ;;
 esac
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-IMAGE="$RELEASE/Codex-Model-Assistant-$VERSION-$ARCH.dmg"
-hdiutil create -quiet -volname "Codex 模型助手 $VERSION" -srcfolder "$STAGING" -ov -format UDZO "$IMAGE"
+IMAGE="$RELEASE/Model-Router-$VERSION-$ARCH.dmg"
+hdiutil create -quiet -volname "Model Router $VERSION" -srcfolder "$STAGING" -ov -format UDZO "$IMAGE"
 # 累积写入：以前是 > 覆盖，跑一次就把 2.0.0/2.1.0 的校验值弄丢了。
 SUMS="$RELEASE/SHA256SUMS.txt"
 NAME="$(basename "$IMAGE")"
@@ -60,7 +60,7 @@ if xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
 else
   echo "未找到公证凭据（keychain profile「$PROFILE」），这份包不会被公证。"
   echo "后果：别人从网络下载后第一次打开需要右键 → 打开，或先执行"
-  echo "      xattr -dr com.apple.quarantine \"/Applications/Codex 模型助手.app\""
+  echo "      xattr -dr com.apple.quarantine \"/Applications/Model Router.app\""
   echo "要做公证，先执行一次："
   echo "  xcrun notarytool store-credentials \"$PROFILE\" --apple-id <Apple ID> --team-id PGJ5BY2925 --password <App 专用密码>"
 fi

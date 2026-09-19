@@ -55,7 +55,12 @@ export function validateRoute(input) {
   if (!["oauth", "responses", "chat", "anthropic", "chatgpt"].includes(route.protocol)) throw new Error("不支持此接口协议");
   if (route.protocol === "oauth" && route.id !== "official") throw new Error("ChatGPT 登录仅用于官方入口");
   if (route.id === "official" && route.protocol !== "oauth") throw new Error("官方入口不能更换协议");
-  if (route.protocol === "oauth" && !["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"].includes(route.model)) throw new Error("ChatGPT 登录入口仅允许官方模型；第三方模型请使用供应商模板");
+  if (route.protocol === "oauth") {
+    // 官方桌面端自己维护模型选择。Model Router 不保存也不伪造官方模型 ID。
+    route.model = "";
+    route.endpoint = "";
+    route.credentialID = route.id;
+  }
   if (route.protocol === "chatgpt") {
     // 官方模型走 Codex 自己的 ChatGPT 登录，不需要地址和密钥。
     route.endpoint = "https://chatgpt.com/backend-api/codex";
@@ -72,7 +77,7 @@ export function validateRoute(input) {
   if (route.docs && !route.docs.startsWith("https://")) throw new Error("文档地址必须使用 HTTPS");
   route.credentialID ||= route.id;
   if (!validID(route.credentialID)) throw new Error("密钥标识无效");
-  route.noKey = Boolean(input.noKey);
+  route.noKey = route.protocol === "oauth" || Boolean(input.noKey);
   if (route.protocol === "chatgpt") route.noKey = true;
   // 隐藏条目不在模型库列表里显示，但仍会出现在可切换窗口的选择器中。
   route.hidden = route.protocol === "oauth" ? false : Boolean(input.hidden);
@@ -97,7 +102,7 @@ export function validateRoute(input) {
 
 function seeds() {
   const routes = [
-    { id: "official", name: "本机 Codex（官方）", vendor: "OpenAI 官方", model: "gpt-6-astra", protocol: "oauth", noKey: true },
+    { id: "official", name: "ChatGPT Desktop（官方）", vendor: "OpenAI 官方", model: "", protocol: "oauth", noKey: true },
     ...templates.filter((entry) => entry.id !== "custom").map((entry) => ({ ...entry, id: entry.id === "deepseek" ? "deepseek-flash" : entry.id, vendor: entry.name, credentialID: entry.id })),
     { id: "deepseek-pro", name: "DeepSeek Pro", vendor: "DeepSeek 官方", model: "deepseek-v4-pro", protocol: "responses", endpoint: "https://api.deepseek.com/v1", credentialID: "deepseek" },
     { id: "agnes", name: "Agnes 2.5 Flash", vendor: "已有服务", model: "agnes-2.5-flash", protocol: "responses", endpoint: "http://127.0.0.1:18790/v1" },
@@ -122,9 +127,11 @@ export class ModelStore {
         .map((route) => {
           const next = { ...route };
           if (next.id === "official") {
-            if (next.name !== "本机 Codex（官方）" || next.vendor !== "OpenAI 官方") migrated = true;
-            next.name = "本机 Codex（官方）";
+            if (next.name !== "ChatGPT Desktop（官方）" || next.vendor !== "OpenAI 官方" || next.model !== "" || next.endpoint !== "") migrated = true;
+            next.name = "ChatGPT Desktop（官方）";
             next.vendor = "OpenAI 官方";
+            next.model = "";
+            next.endpoint = "";
             next.hidden = false;
             next.archived = false;
             next.switchable = false;

@@ -1,8 +1,8 @@
-# Codex 模型助手 2.8 使用手册
+# Model Router 3.0 使用手册
 
 ## 安装与首次启动
 
-将「Codex 模型助手.app」放入 Applications，打开即可。2.8.3 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
+将「Model Router.app」放入 Applications，打开即可。3.0.0 是 Universal 构建（Apple Silicon + Intel），内置两套已校验 SHA-256 的 Node.js 24.20.0，无需安装 Homebrew 或手动设置环境变量。需要另行安装 Codex App（默认路径 `/Applications/Codex.app`）。最低 macOS 12.0；发布前会同时校验 arm64/x86_64 slice、签名与安装包。
 
 助手首次启动会初始化模型库并启动本机网关。已存在的本机 DeepSeek / Agnes 私有 Key 会迁移一次，不打印明文；全新机器需要用户自行填写 Key。API 供应商与 ChatGPT 订阅分别计费。模型助手本身不代理充值或计费。
 
@@ -18,9 +18,9 @@
 
 已预置 DeepSeek、OpenAI API、Anthropic、Gemini、通义千问、Kimi、GLM、Grok、Mistral、Groq、OpenRouter、Ollama、LM Studio 和自定义模板。模型 ID 示例不是账号权限保证，也不宣称永远为最新。OpenAI 官方 ChatGPT 入口独立保留，不能放入 Agnes 等第三方模型。
 
-### 官方入口就是本机原版 Codex
+### 官方入口：ChatGPT Desktop / Codex 原版
 
-2.8.3 起，官方只保留一个「本机 Codex（官方）」入口。点击它时助手不会创建独立 `CODEX_HOME`，也不会传 `--user-data-dir`；如果原版 Codex 已经运行，会直接把该进程切到前台，否则按默认资料启动 `/Applications/Codex.app`。因此会复用你已经登录好的 ChatGPT/Codex 账号、原任务库和官方顶部模型选择器。
+3.0 起，官方只保留一个「ChatGPT Desktop（官方）」入口。点击它时助手不会创建独立 `CODEX_HOME`，也不会传 `--user-data-dir`；如果原版 Codex 已经运行，会直接把该进程切到前台，否则按默认资料启动 `/Applications/Codex.app`。因此会复用你已经登录好的 ChatGPT/Codex 账号、原任务库和官方顶部模型选择器。
 
 历史版本创建过的 `官方 · GPT-6 Astra / GPT-5.6 Sol / Terra / Luna / GPT-5.5` 隐藏条目属于旧的代理方案，升级后会自动从模型库清理，并且不再进入工作窗口的模型下拉框。官方模型的具体选择交给原版 Codex 自己，不由助手重复维护。
 
@@ -36,7 +36,7 @@
 
 - 侧边栏「新建可切换窗口」→ 再开一个；选中某个模型后点「在新窗口打开」→ 用该模型作为起始模型。
 - 侧边栏「窗口管理（）」是列表页：每个窗口一行，显示名称、起始模型、运行状态和 PID，可以打开、关闭、重命名、删除；也可以在这一页直接新建，并选择起始模型。
-- 每个窗口有自己的一份 `CODEX_HOME` 和浏览器数据目录：`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值，所以窗口之间、以及和官方 Codex 的 Electron 状态都完全隔离，可以同时干活。官方 Codex 的 `~/Library/Application Support/Codex` 不会被写。
+- 每个窗口有自己的一份 `CODEX_HOME` 和浏览器数据目录：`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值，所以窗口之间、以及和 ChatGPT Desktop（官方）的 Electron 状态都完全隔离，可以同时干活。ChatGPT Desktop（官方）的 `~/Library/Application Support/Codex` 不会被写。
 - 窗口在 Codex 顶部的模型选择里能直接换模型：窗口的 `config.toml` 指向网关的 `cma_router`（`/router/v1`），助手按模型标识把请求转成对应供应商的接口（Responses / Chat / Anthropic），所以 Chat 专用的第三方 API 也能在这里切换使用。官方 ChatGPT 登录入口和已归档模型不出现在列表里。
 - 「起始模型」只是打开时的默认值，窗口会记住它；之后随时可以在 Codex 里换。窗口在运行时再点「打开」不会重复启动，只会提示 PID；要换起始模型请先关闭该窗口。
 - 新窗口按约定是空任务库（不会把旧对话灌进去）。需要旧对话时用手动导入。
@@ -74,7 +74,7 @@
 - **启动窗口前自动清理**：侧边栏有个开关（默认开）。打开窗口时、Codex 还没读任务库之前，助手会把**这一个窗口**里「官方库已归档」或「30 天没动过」的副本连缓存一起清掉——原件在官方库里，随时能再导入回来。多开窗口和每个模型的专用窗口都适用（后者才是副本最多的地方）。唯一例外：点「导入原会话并继续」**第一次**做整份快照时不清，免得刚导入就被删；之后这个窗口再启动照常清理。想完全手动，就把开关关掉，只在点「清理」时才删。
 - **审计清单**：每次清理前会在 `~/.codex/model-assistant/cleanup/<时间戳>.json` 留下清单，记录每条会话 id、标题、原路径、字节数和时间。
 - **运行中的窗口会被跳过**：正在运行的窗口不参与清理（避免删掉它正在用的数据）。跳过的是**它自己**，其它已经关闭的窗口照清——多开时不需要把所有窗口都关掉才能清理。工作窗口 `router-v1` 只清「官方库已归档」或「30 天没动过」的副本，其余保留。被跳过的窗口会显示「还有 X GB 等它关闭后自动清理」，这个数字不计入「可回收」。
-- **官方库默认只读**：上面这些清理不会修改或删除 `~/.codex` 里的任何东西。唯一例外是单独的那个「清理官方库已归档」按钮——它只删官方库里**已归档**的会话，删的是**原件、没有第二份、不可恢复**，所以：默认不自动执行、必须二次确认、官方 Codex 正在运行时会直接禁用（避免动它正在用的任务库）。未归档的会话一条都不动（包括那些只是「老」的）。
+- **官方库默认只读**：上面这些清理不会修改或删除 `~/.codex` 里的任何东西。唯一例外是单独的那个「清理官方库已归档」按钮——它只删官方库里**已归档**的会话，删的是**原件、没有第二份、不可恢复**，所以：默认不自动执行、必须二次确认、ChatGPT Desktop（官方）正在运行时会直接禁用（避免动它正在用的任务库）。未归档的会话一条都不动（包括那些只是「老」的）。
 - **清掉的副本可以取回**：副本的源头在官方库，点「导入全部（官方 + 各模型窗口）」就能重新回到窗口里。这和「快照复制」一样是复制语义，不是移动。
 - **删除范围写死、有据可查**：自动与手动使用的判定规则完全相同（官方已归档 / 超 30 天 / 只清副本 / 只清缓存白名单），每次落盘前都会再校验一次路径，白名单之外的东西一律不动。
 - 命令行等价入口：`disk-usage`、`cleanup-plan`、`cleanup-apply --confirm`、`disk-policy`、`set-disk-policy`。
@@ -136,7 +136,7 @@ Responses 服务保留原生流式响应。Chat Completions 和 Anthropic Messag
 提示「无法验证开发者」或「已损坏」。这是预期行为，不是文件坏了。任选一种方式通过：
 
 1. Finder 里按住 Control 点应用 → 「打开」→ 再确认一次「打开」；
-2. 或执行 `xattr -dr com.apple.quarantine "/Applications/Codex 模型助手.app"` 再打开。
+2. 或执行 `xattr -dr com.apple.quarantine "/Applications/Model Router.app"` 再打开。
 
 自己构建、自己安装的版本没有 quarantine 标记，不会出现这个提示。
 

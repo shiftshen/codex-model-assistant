@@ -393,7 +393,7 @@ test("官方库清理：只删已归档会话，未归档的与窗口数据一�
 
   await assert.rejects(() => applyOfficialArchived({ root, officialHome, plan, confirm: false }), /不可恢复/);
   await fs.access(archivedFile);
-  await assert.rejects(() => applyOfficialArchived({ root, officialHome, plan, confirm: true, officialRunning: true }), /官方 Codex 正在运行/);
+  await assert.rejects(() => applyOfficialArchived({ root, officialHome, plan, confirm: true, officialRunning: true }), /ChatGPT Desktop（官方）正在运行/);
   await fs.access(archivedFile);
 
   const result = await applyOfficialArchived({ root, officialHome, plan, confirm: true });

@@ -49,7 +49,7 @@
 「能不能在别人的 Mac 上顺利打开」取决于 Apple 公证，不是取决于架构。
 现在这份包是 Developer ID 签名的，但**没有公证**，所以从网络下载后第一次打开会被 Gatekeeper 拦下
 （提示「无法验证开发者」或「已损坏」），必须先右键 → 打开，或执行
-`xattr -dr com.apple.quarantine "/Applications/Codex 模型助手.app"`。
+`xattr -dr com.apple.quarantine "/Applications/Model Router.app"`。
 
 `scripts/package-release.sh` 已经做成「有凭据就自动公证」：
 

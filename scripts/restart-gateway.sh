@@ -32,5 +32,5 @@ for _ in {1..60}; do
     exit 0
   fi
 done
-echo "网关重启后仍未报告新指纹，请打开「Codex 模型助手」或查看 ~/Library/Logs/codex-model-gateway.log" >&2
+echo "网关重启后仍未报告新指纹，请打开「Model Router」或查看 ~/Library/Logs/codex-model-gateway.log" >&2
 exit 1

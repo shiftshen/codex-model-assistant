@@ -15,7 +15,7 @@ async function fixture(context) {
   return { applications, backupDir };
 }
 
-const appPath = (applications) => path.join(applications, "Codex 模型助手.app");
+const appPath = (applications) => path.join(applications, "Model Router.app");
 
 test("备份整理：只保留最近 N 份，更旧的删掉", async (context) => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "cma-backup-"));
@@ -44,13 +44,13 @@ test("安装整理：/Applications 里只留一个应用，历史备份与多余
   }
   await fs.mkdir(path.join(applications, "别的应用.app"));
   for (const stamp of ["20260918-190000", "20260918-191000", "20260918-192000"]) {
-    await fs.mkdir(path.join(backupDir, `Codex 模型助手-${stamp}.app`));
+    await fs.mkdir(path.join(backupDir, `Model Router-${stamp}.app`));
   }
   await fs.mkdir(path.join(backupDir, "别的东西"));
 
   const result = await pruneAppBackups({ appPath: appPath(applications), backupDir, keep: 2 });
   assert.equal(result.leftovers.length, 3, "历史遗留的 .backup-* 必须都被清掉");
   assert.equal(result.trimmed.length, 1, "备份目录只留最近 2 份");
-  assert.deepEqual((await fs.readdir(applications)).sort(), ["Codex 模型助手.app", "别的应用.app"]);
-  assert.deepEqual((await fs.readdir(backupDir)).sort(), ["Codex 模型助手-20260918-191000.app", "Codex 模型助手-20260918-192000.app", "别的东西"]);
+  assert.deepEqual((await fs.readdir(applications)).sort(), ["Model Router.app", "别的应用.app"]);
+  assert.deepEqual((await fs.readdir(backupDir)).sort(), ["Model Router-20260918-191000.app", "Model Router-20260918-192000.app", "别的东西"]);
 });

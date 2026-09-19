@@ -421,7 +421,7 @@ export async function cleanupWindowOnLaunch({ root, officialHome, windowID, home
 // —— 官方库「已归档会话」清理 ——
 // 这是唯一会改动 ~/.codex 的操作，和窗口副本清理性质不同：
 // 窗口里的副本删了还能从官方库再导入一份，官方库删了就没有第二份了（不可恢复）。
-// 所以三条硬规矩：必须显式确认、官方 Codex 没在运行时才允许、只清 archived=1。
+// 所以三条硬规矩：必须显式确认、ChatGPT Desktop（官方）没在运行时才允许、只清 archived=1。
 // olderThanDays 为 null 时只选「已归档」；给了天数就再加「超过 N 天没动过」。
 // 后者删的是用户没归档、但很旧的历史，风险明显更高，所以调用方必须显式传天数。
 export async function officialArchivedPlan({ officialHome, olderThanDays = null, now = Date.now() }) {
@@ -486,7 +486,7 @@ export async function archiveRollouts({ items, archiveDir, officialHome, stamp =
 
 export async function applyOfficialArchived({ root, officialHome, plan, confirm = false, officialRunning = false, archiveDir = "" }) {
   if (!confirm) throw new Error("官方库的会话没有第二份，删除不可恢复，必须显式确认后才能执行");
-  if (officialRunning) throw new Error("官方 Codex 正在运行，拒绝清理官方库：请先退出官方窗口再试");
+  if (officialRunning) throw new Error("ChatGPT Desktop（官方）正在运行，拒绝清理官方库：请先退出官方窗口再试");
   if (!plan.items.length) return { deletedFiles: 0, deletedThreads: 0, freedBytes: 0, beforeBytes: 0, afterBytes: 0, backupManifest: null };
   const archive = archiveDir ? await archiveRollouts({ items: plan.items, archiveDir, officialHome }) : null;
   const manifest = await writeAuditManifest(root, plan, undefined, { kind: "official-archived" });

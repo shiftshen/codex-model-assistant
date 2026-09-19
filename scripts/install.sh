@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-APP_SOURCE="$ROOT/build/Codex 模型助手.app"
-APP_TARGET="/Applications/Codex 模型助手.app"
+APP_SOURCE="$ROOT/build/Model Router.app"
+APP_TARGET="/Applications/Model Router.app"
 RUNTIME="$HOME/.codex/model-assistant/runtime"
 CLI_DIR="$HOME/.codex/bin/codex-model-assistant"
 PLIST="$HOME/Library/LaunchAgents/local.shift.codex-deepseek-relay.plist"
@@ -40,7 +40,7 @@ launchctl bootout "gui/$(id -u)/local.shift.codex-deepseek-relay" 2>/dev/null ||
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
 if [[ -d "$APP_TARGET" ]]; then
-  mv "$APP_TARGET" "/Applications/Codex 模型助手.app.backup-$(date +%Y%m%d-%H%M%S)"
+  mv "$APP_TARGET" "/Applications/Model Router.app.backup-$(date +%Y%m%d-%H%M%S)"
 fi
 ditto "$APP_SOURCE" "$APP_TARGET"
 codesign --verify --deep --strict "$APP_TARGET"

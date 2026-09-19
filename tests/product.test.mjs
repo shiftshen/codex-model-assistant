@@ -47,10 +47,11 @@ test("seeds mainstream providers without pretending keys exist", async (context)
   assert.ok(data.routes.every((route) => !route.hasKey));
   assert.equal(data.routes.find((route) => route.id === "deepseek-flash").endpoint, "https://api.deepseek.com/v1");
   assert.ok(data.routes.filter((route) => route.id.startsWith("s5090-")).every((route) => route.protocol === "chat"));
-  assert.equal(data.routes.find((route) => route.id === "official").name, "本机 Codex（官方）");
+  assert.equal(data.routes.find((route) => route.id === "official").name, "ChatGPT Desktop（官方）");
+  assert.equal(data.routes.find((route) => route.id === "official").model, "");
 });
 
-test("升级会自动删除旧 official-gpt-* 代理，只保留唯一的本机 Codex 官方入口", async (context) => {
+test("升级会自动删除旧 official-gpt-* 代理，只保留唯一的 ChatGPT Desktop 官方入口", async (context) => {
   const store = await fixture(context);
   const data = await store.read();
   const oldOfficial = validateRoute({
@@ -70,7 +71,9 @@ test("升级会自动删除旧 official-gpt-* 代理，只保留唯一的本机 
   assert.equal(migrated.routes.some((route) => route.id === oldOfficial.id), false);
   assert.equal(migrated.routes.find((route) => route.id === "deepseek-flash").fallback, "");
   const official = migrated.routes.find((route) => route.id === "official");
-  assert.equal(official.name, "本机 Codex（官方）");
+  assert.equal(official.name, "ChatGPT Desktop（官方）");
+  assert.equal(official.model, "");
+  assert.equal(official.endpoint, "");
   assert.equal(official.vendor, "OpenAI 官方");
   assert.equal(official.switchable, false);
   assert.ok(migrated.revision > data.revision);
@@ -131,7 +134,9 @@ test("archive is reversible and official recovery is protected", async (context)
   await store.save({ ...route, archived: false }, 2);
   assert.equal((await store.route(route.id)).archived, false);
   assert.equal(validateRoute({ ...(await store.route("official")), archived: true }).archived, false);
-  assert.throws(() => validateRoute({ ...(JSON.parse(JSON.stringify(route))), id: "official", protocol: "oauth", model: "agnes-2.5-flash" }), /仅允许官方模型/);
+  const normalizedOfficial = validateRoute({ ...(JSON.parse(JSON.stringify(route))), id: "official", name: "ChatGPT Desktop（官方）", protocol: "oauth", model: "agnes-2.5-flash" });
+  assert.equal(normalizedOfficial.model, "");
+  assert.equal(normalizedOfficial.endpoint, "");
 });
 
 test("imports cannot overwrite routes or bind existing credentials", async (context) => {

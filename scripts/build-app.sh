@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 BUILD="$ROOT/build"
-APP="$BUILD/Codex 模型助手.app"
+APP="$BUILD/Model Router.app"
 NODE_VERSION="24.20.0"
 # 显式指定部署目标：不给 -target 的话 swiftc 会按本机 SDK 写 minos。
 # 之前在 macOS 26 的机器上构建，二进制里写的就是「最低要求 26.0」——
@@ -12,12 +12,12 @@ DEPLOYMENT_TARGET="12.0"
 
 mkdir -p "$BUILD/slices" "$APP/Contents/MacOS" "$APP/Contents/Resources/runtime"
 
-if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
+if [[ ! -f "$ROOT/Resources/ModelRouter.icns" ]]; then
   "$ROOT/scripts/make-icon.sh"
 fi
 
 # 构建产物落在仓库的 build/ 里，会被 Spotlight / LaunchServices 一起收录，
-# 结果 Launchpad 里出现两个「Codex 模型助手」（一个是 /Applications 里的正主，
+# 结果 Launchpad 里出现两个「Model Router」（一个是 /Applications 里的正主，
 # 一个是这里的构建产物）。放一个 .metadata_never_index 并主动注销，别让它再冒出来。
 touch "$BUILD/.metadata_never_index"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
@@ -61,7 +61,7 @@ if [[ -f "$APP/Contents/Resources/node-$HOST_ARCH" ]]; then
   cp "$APP/Contents/Resources/node-$HOST_ARCH" "$APP/Contents/Resources/node"
 fi
 
-cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/Resources/ModelRouter.icns" "$APP/Contents/Resources/ModelRouter.icns"
 chmod 755 "$APP/Contents/MacOS/CodexModelAssistant"
 
 IDENTITY="${CODE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)}"

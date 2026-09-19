@@ -182,7 +182,7 @@ async function registryNames(root) {
 export async function threadScopes(root, homeDirectory = os.homedir()) {
   const names = await registryNames(root);
   const scopes = [
-    { key: "official", label: "官方 Codex", home: path.join(homeDirectory, ".codex") },
+    { key: "official", label: "ChatGPT Desktop", home: path.join(homeDirectory, ".codex") },
     { key: "router", label: names.get("router") ?? "常用", home: path.join(root, "router-v1", "codex-home") },
   ];
   for (const slot of ["windows-v1", "continuations-v1", "instances-v2"]) {

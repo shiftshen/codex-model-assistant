@@ -89,7 +89,7 @@ struct ModelLibraryView: View {
         HStack(spacing: 12) {
             Image(systemName: "square.stack.3d.up.fill").font(.title2).foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Codex 模型助手").font(.headline)
+                Text("Model Router").font(.headline)
                 Text("MODEL ROUTER · \(bundleVersion)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -100,7 +100,7 @@ struct ModelLibraryView: View {
                 .help("配置模型、检查连接、看诊断——都在这一个弹窗里")
             Menu {
                 Button("运行诊断") { Task { await library.perform("diagnostics") } }
-                Button("打开本机 Codex（官方）") { Task { await library.openCodex("official") } }
+                Button("打开 ChatGPT Desktop（官方）") { Task { await library.openCodex("official") } }
                 Divider()
                 Divider()
                 Button("导入模型配置…") { Task { await library.importLibrary() } }
@@ -230,18 +230,18 @@ struct ModelLibraryView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 7) {
                 Image(systemName: "app.badge.checkmark").foregroundStyle(.blue)
-                Text("本机 Codex（官方）").font(.system(size: 15, weight: .semibold))
+                Text("ChatGPT Desktop（官方）").font(.system(size: 15, weight: .semibold))
                 Text("原版").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(Color.blue.opacity(0.12), in: Capsule())
                 Spacer()
             }
-            Text("就是 /Applications/Codex.app 的默认资料：复用你已经登录的 ChatGPT 账号、原任务库和官方模型选择器。")
+            Text("打开系统里的官方 ChatGPT Desktop / Codex 默认资料：复用你的登录账号、原任务库和官方模型选择器。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("不经过模型助手路由 · 不创建独立 CODEX_HOME · 不使用 --user-data-dir")
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-                Button("打开 / 切到原版 Codex") { Task { await library.openCodex("official") } }
+                Button("打开 / 切到 ChatGPT Desktop") { Task { await library.openCodex("official") } }
                     .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
                 Spacer()
             }
@@ -252,7 +252,7 @@ struct ModelLibraryView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.32), lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .onTapGesture { Task { await library.openCodex("official") } }
-        .help("打开你本机默认的 Codex.app。Dock 里的图标会和可切换窗口共用，因此请从这里进入官方原版。")
+        .help("打开官方 ChatGPT Desktop / Codex 默认资料。Dock 图标会和可切换窗口共用，因此从这里进入最明确。")
     }
 
     private func windowCard(_ window: WorkWindow) -> some View {
@@ -564,7 +564,7 @@ struct ModelLibraryView: View {
                                         }
                                     }
                                     Text(model.vendor).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
-                                    Text(model.model.isEmpty ? "尚未选择模型 ID" : model.model)
+                                    Text(model.protocol == "oauth" ? "模型由 ChatGPT Desktop 内选择" : (model.model.isEmpty ? "尚未选择模型 ID" : model.model))
                                         .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                                 }
                                 Spacer(minLength: 8)
@@ -648,7 +648,7 @@ struct ModelLibraryView: View {
                 }
                 if let official = library.officialArchive, let count = official.count, count > 0 {
                     Text(official.officialRunning == true
-                         ? "官方库有 \(count) 条已归档会话（\(humanBytes(official.bytes))）；官方 Codex 正在运行，先退出它才能清"
+                         ? "官方库有 \(count) 条已归档会话（\(humanBytes(official.bytes))）；ChatGPT Desktop（官方）正在运行，先退出它才能清"
                          : "官方库有 \(count) 条已归档会话可清 · \(humanBytes(official.bytes))（原件，不可恢复）")
                         .font(.caption2).foregroundStyle(official.officialRunning == true ? Color.secondary : Color.orange)
                 }
@@ -720,24 +720,26 @@ struct ModelLibraryView: View {
                     .background(model.ready ? Color.blue.opacity(0.1) : Color.orange.opacity(0.12), in: Capsule())
             }
             VStack(spacing: 0) {
-                row("模型 ID", model.model.isEmpty ? "未选择 · 使用发现模型或编辑" : model.model)
+                row("模型 ID", model.protocol == "oauth" ? "由 ChatGPT Desktop 内选择" : (model.model.isEmpty ? "未选择 · 使用发现模型或编辑" : model.model))
                 Divider()
                 row("API 地址", model.protocol == "oauth" ? "ChatGPT 官方服务" : model.endpoint)
                 Divider()
                 row("接口格式", model.protocol == "oauth" ? "官方登录" : model.protocol)
                 Divider()
-                row("密钥状态", model.protocol == "oauth" ? "使用 Codex 登录信息" : (model.noKey ? "无需密钥" : (model.hasKey == true ? "已保存 · 不展示原文" : "未配置 API Key")))
+                row("密钥状态", model.protocol == "oauth" ? "使用 ChatGPT Desktop 登录信息" : (model.noKey ? "无需密钥" : (model.hasKey == true ? "已保存 · 不展示原文" : "未配置 API Key")))
                 Divider()
-                row("可切换窗口", model.protocol == "oauth" ? "官方入口自带模型选择" : (model.archived ? "已归档，不收录" : (library.switchModels.contains { $0.id == model.id } ? "已收录 · 同一窗口直接换" : "未收录")))
+                row("可切换窗口", model.protocol == "oauth" ? "不经过 Model Router 工作窗口" : (model.archived ? "已归档，不收录" : (library.switchModels.contains { $0.id == model.id } ? "已收录 · 同一窗口直接换" : "未收录")))
                 Divider()
-                row("本窗口模型", model.protocol == "oauth" ? "官方模型选择" : (model.switchable == true ? "可切换全部模型" : "仅此模型"))
+                row("本窗口模型", model.protocol == "oauth" ? "由 ChatGPT Desktop 内选择" : (model.switchable == true ? "可切换全部模型" : "仅此模型"))
                 Divider()
                 row("失败时改用", model.protocol == "oauth" ? "不适用" : (model.fallback.flatMap { id in library.models.first { $0.id == id }?.name } ?? "未设置"))
             }.padding(.horizontal, 16).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 10) {
-                Button("编辑配置 / Key") { editing = model }
-                Button("发现模型") { Task { await library.perform("discover") } }.disabled(!model.noKey && model.hasKey != true && model.protocol != "oauth")
-                Button("自动识别接口") { Task { await library.perform("autodetect") } }.disabled(!model.ready || model.archived || model.protocol == "oauth").help("逐个真跑一次最小请求，自动判断该供应商用的是 Responses、Chat 还是 Messages，并保存结果")
+                if model.protocol != "oauth" {
+                    Button("编辑配置 / Key") { editing = model }
+                    Button("发现模型") { Task { await library.perform("discover") } }.disabled(!model.noKey && model.hasKey != true)
+                    Button("自动识别接口") { Task { await library.perform("autodetect") } }.disabled(!model.ready || model.archived).help("逐个真跑一次最小请求，自动判断该供应商用的是 Responses、Chat 还是 Messages，并保存结果")
+                }
                 if !model.docs.isEmpty, let url = URL(string: model.docs) { Link("官方文档 ↗", destination: url).font(.callout) }
                 Spacer()
             }.disabled(library.busy)
@@ -759,22 +761,25 @@ struct ModelLibraryView: View {
             HStack {
                 if model.id != "official" { Button(model.archived ? "恢复模型" : "归档") { Task { await library.archive() } } }
                 Spacer()
-                Button("检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
-                Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived || model.protocol == "oauth").help("发送短测试请求，消耗少量供应商额度")
-                Button("打开 Codex") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
-                    .help(model.protocol == "oauth" ? "打开官方 Codex：默认资料、你平时的登录状态和任务库" : "已经开着的窗口就切过去，没有窗口才新建。到 Codex 顶部的模型选择里换模型即可")
-                Button("新建窗口") { Task { await library.newWindow(initial: model.id) } }.disabled(!model.ready || model.archived)
-                    .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")
-                Menu {
-                    Button("专用单模型窗口（不复用已有窗口）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
-                    if model.protocol != "oauth" {
+                Button(model.protocol == "oauth" ? "检查登录" : "检查连接") { Task { await library.perform("check") } }.disabled(!model.ready || model.archived)
+                if model.protocol == "oauth" {
+                    Button("打开 ChatGPT Desktop") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent)
+                        .help("打开官方 ChatGPT Desktop / Codex 默认资料、登录状态和任务库")
+                } else {
+                    Button("真实验证") { Task { await library.perform("probe") } }.disabled(!model.ready || model.archived).help("发送短测试请求，消耗少量供应商额度")
+                    Button("打开 Codex") { Task { await library.openCodex(model.id) } }.buttonStyle(.borderedProminent).disabled(!model.ready || model.archived)
+                        .help("已经开着的窗口就切过去，没有窗口才新建。到 Codex 顶部的模型选择里换模型即可")
+                    Button("新建窗口") { Task { await library.newWindow(initial: model.id) } }.disabled(!model.ready || model.archived)
+                        .help("再开一个独立的 Codex 窗口，用这个模型作为起始模型；想看两个模型同时干活时用")
+                    Menu {
+                        Button("专用单模型窗口（不复用已有窗口）") { Task { await library.perform("launch") } }.disabled(!model.ready || model.archived)
                         Button("导入官方会话并继续") { Task { await library.perform("continue") } }.disabled(!model.ready || model.archived)
-                    }
-                    if model.switchable == true {
-                        Button("本窗口改为单模型") { Task { await library.perform("disable-switching") } }
-                    }
-                } label: { Image(systemName: "ellipsis.circle") }
-                .menuStyle(.borderlessButton).frame(width: 28)
+                        if model.switchable == true {
+                            Button("本窗口改为单模型") { Task { await library.perform("disable-switching") } }
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).frame(width: 28)
+                }
             }.disabled(library.busy)
         }.padding(28)
     }

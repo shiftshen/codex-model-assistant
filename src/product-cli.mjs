@@ -148,7 +148,7 @@ async function main() {
   if (command === "prune-empty-projects") return service.pruneEmptyProjects({ dryRun: process.argv.includes("--dry-run") });
   // 磁盘策略：控制「窗口启动前自动清理不重要副本」和「顺手清浏览器缓存」两个开关。
   if (command === "disk-policy") return { diskPolicy: await readDiskPolicy(store), message: "磁盘策略已读取" };
-  // 官方库已归档会话：删的是原件、不可恢复，所以只认 --confirm，且官方 Codex 在跑时直接拒绝。
+  // 官方库已归档会话：删的是原件、不可恢复，所以只认 --confirm，且 ChatGPT Desktop（官方）在跑时直接拒绝。
   if (command === "cleanup-official-plan" || command === "cleanup-official-apply") {
     const home = officialHome();
     // --older-than <天>：连「没归档但超过 N 天」的旧会话一起清（风险更高，必须显式给天数）。
@@ -171,7 +171,7 @@ async function main() {
           sample: official.items.slice(0, 10).map(({ id, title, bytes, reason }) => ({ id, title: String(title).slice(0, 60), bytes, reason })),
         },
         message: official.items.length
-          ? `官方库可清理 ${official.items.length} 条会话，共 ${humanBytes(official.reclaimBytes)}${olderThanDays ? `（含超 ${olderThanDays} 天的旧会话）` : "（仅已归档）"}${officialArchive.officialRunning ? "；但官方 Codex 正在运行，请先退出官方窗口" : ""}`
+          ? `官方库可清理 ${official.items.length} 条会话，共 ${humanBytes(official.reclaimBytes)}${olderThanDays ? `（含超 ${olderThanDays} 天的旧会话）` : "（仅已归档）"}${officialArchive.officialRunning ? "；但 ChatGPT Desktop（官方）正在运行，请先退出官方窗口" : ""}`
           : "官方库没有可清理的会话",
       };
     }

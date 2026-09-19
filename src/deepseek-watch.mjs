@@ -35,7 +35,7 @@ const HOST = "api.deepseek.com";
 
 export function classifyProcess(command, name = "") {
   const text = `${command} ${name}`.toLowerCase();
-  if (text.includes("model-gateway") || text.includes("model-assistant") || text.includes("codex-model")) return "Codex 模型助手";
+  if (text.includes("model-gateway") || text.includes("model-assistant") || text.includes("codex-model")) return "Model Router";
   if (text.includes("openclaw")) return "openclaw";
   if (text.includes("hermes")) return "Hermes";
   if (text.includes("chatgpt") || text.includes("/codex.app/")) return "Codex 本体";

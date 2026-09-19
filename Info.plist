@@ -5,23 +5,23 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
-    <string>Codex 模型助手</string>
+    <string>Model Router</string>
     <key>CFBundleExecutable</key>
     <string>CodexModelAssistant</string>
     <key>CFBundleIdentifier</key>
     <string>local.shift.codex-model-assistant</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
+    <string>ModelRouter</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Codex 模型助手</string>
+    <string>Model Router</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.8.5</string>
+    <string>3.0.0</string>
     <key>CFBundleVersion</key>
-    <string>34</string>
+    <string>40</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
