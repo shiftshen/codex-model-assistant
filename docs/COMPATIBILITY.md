@@ -44,24 +44,21 @@
   另去掉 `formStyle(.grouped)` 与 `onChange` 的双参数写法）。
 - 若日后拿到 Intel 或 macOS 12/13 实机，应按上表重跑一遍，并把结果补进本文件。
 
-## 公证（还没做，但流水线已经就绪）
+## 公证与公开分发
 
 「能不能在别人的 Mac 上顺利打开」取决于 Apple 公证，不是取决于架构。
-现在这份包是 Developer ID 签名的，但**没有公证**，所以从网络下载后第一次打开会被 Gatekeeper 拦下
-（提示「无法验证开发者」或「已损坏」），必须先右键 → 打开，或执行
-`xattr -dr com.apple.quarantine "/Applications/Model Router.app"`。
+`scripts/package-release.sh` 的正式流程是：
 
-`scripts/package-release.sh` 已经做成「有凭据就自动公证」：
+1. 校验 Developer ID 签名；
+2. 把 App 打成 zip 提交 `notarytool submit --wait`；
+3. `stapler staple` / `stapler validate` App；
+4. `spctl --assess --type execute` 验证 Gatekeeper；
+5. 用已装订的 App 重新生成最终 DMG；
+6. 单独提交 DMG 公证并装订；
+7. `hdiutil verify` 后再计算最终 SHA-256。
 
-- 找到 `notarytool` 凭据 → 自动 `submit --wait`，成功后 `stapler staple` + `validate`；
-- 找不到 → 明确打印缺什么、怎么补、以及不公证的后果，包照常产出。
+脚本优先使用显式 `NOTARY_PROFILE`，未指定时会探测本机可用 keychain profile。
+当前开发机上的 `xbrowser-notary` 已通过 `notarytool history` 实测，并存在历史 `Accepted` 提交。
+脚本只引用 profile 名，不读取、输出或保存 Apple 密码、API 私钥或证书私钥。
 
-补齐凭据只要跑一次（App 专用密码在 appleid.apple.com 生成）：
-
-```bash
-xcrun notarytool store-credentials "codex-model-assistant" \
-    --apple-id <Apple ID> --team-id PGJ5BY2925 --password <App 专用密码>
-```
-
-之后 `zsh scripts/package-release.sh` 就会连带完成公证与装订。
-这一步需要账号凭据，手上没有，所以**未验证过真实提交**；验证过的只有「无凭据时的分支」。
+如果开发者机器上没有任何可用 profile，脚本会明确退回“已签名但未公证”的开发包，不会假装公证成功。

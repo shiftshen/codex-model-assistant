@@ -128,17 +128,13 @@ Responses 服务保留原生流式响应。Chat Completions 和 Anthropic Messag
 - 签名：Developer ID Application（Chinda Lorcharoen），主程序与自带的 node 运行时都已签名；
 - 架构：**通用二进制**（Apple Silicon + Intel），node 运行时两份都打包，按架构自动选；
 - 系统：**macOS 12.0 起**；
-- **尚未做 Apple 公证**，也尚未做干净机器的分发验收。
+- 3.0 正式 Release 会对 App 和 DMG 分别执行 Apple 公证并装订票据；发布脚本还会用 `spctl`、`stapler` 和 `hdiutil verify` 做最终验证。
 
 ## 首次在其他 Mac 上打开
 
-因为是签名但未公证，从网络下载（GitHub、网盘等）后第一次打开时 Gatekeeper 会拦一下，
-提示「无法验证开发者」或「已损坏」。这是预期行为，不是文件坏了。任选一种方式通过：
-
-1. Finder 里按住 Control 点应用 → 「打开」→ 再确认一次「打开」；
-2. 或执行 `xattr -dr com.apple.quarantine "/Applications/Model Router.app"` 再打开。
-
-自己构建、自己安装的版本没有 quarantine 标记，不会出现这个提示。
+正式 GitHub Release 若通过 Apple 公证，首次打开应由 Gatekeeper 识别为 `Notarized Developer ID`。
+如果开发者自己在另一台机器本地打包、且没有可用的 notarytool profile，脚本仍允许生成“已签名但未公证”的开发包；
+这类包首次打开时可能需要 Finder 里 Control/右键 →「打开」，或手动移除 quarantine。
 
 ## 已移除的功能
 

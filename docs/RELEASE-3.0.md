@@ -12,6 +12,7 @@
 - GitHub README 和项目资料全面更新
 - 官方入口语义升级为 ChatGPT Desktop / Codex 原版入口
 - 保持旧 bundle id、数据目录、Gateway label，升级不丢数据
+- macOS 正式包执行 Developer ID 签名、App notarization/staple、DMG notarization/staple 和 Gatekeeper 验证
 
 ## 保留的核心能力
 
