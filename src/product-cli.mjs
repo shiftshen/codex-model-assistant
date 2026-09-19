@@ -9,6 +9,7 @@ import { readDiskPolicy, saveDiskPolicy } from "./disk-policy.mjs";
 import { readRecentRoutes, readUsageReport } from "./product-service.mjs";
 import { resolveContextWindow } from "./model-windows.mjs";
 import { liveThreadRows } from "./thread-ledger.mjs";
+import { readCallLog, readWatchState, summarizeCalls } from "./deepseek-watch.mjs";
 
 const store = new ModelStore();
 const service = new ProductService(store);
@@ -109,6 +110,25 @@ async function main() {
       ok: true,
       threads: rows,
       message: lines.join("\n") || `最近 ${minutes} 分钟没有活跃对话`,
+    };
+  }
+  // 「这台机器上还有谁在调 DeepSeek」：对扣费最直接的疑问。配置里换了模型
+  // 不等于没人再打那个端点——压缩、后备链、别的程序都可能绕过去，这个命令
+  // 读后台监控抓到的实际连接，按程序归类，不再靠推断。
+  if (command === "deepseek-watch") {
+    const records = await readCallLog(Number(id) > 0 ? Number(id) : 500);
+    const summary = summarizeCalls(records);
+    const state = await readWatchState();
+    const lines = summary.map((entry) => {
+      const at = new Date(Date.parse(entry.last) + 7 * 3600e3).toISOString().slice(11, 19);
+      return `${entry.kind} ×${entry.count}（最近一次 ${at}）`;
+    });
+    return {
+      ok: true,
+      state,
+      summary,
+      calls: records.slice(-40).reverse(),
+      message: lines.length ? lines.join("\n") : "还没有抓到任何对 DeepSeek 的调用",
     };
   }
   if (command === "continue") return service.launch(id, { continueExisting: true });
