@@ -1,6 +1,6 @@
 {
   "name": "codex-model-assistant",
-  "version": "2.9.0-windows-preview.1",
+  "version": "2.9.0-windows-preview.2",
   "private": true,
   "type": "module",
   "main": "windows/main.mjs",

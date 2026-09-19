@@ -25,12 +25,13 @@ function renderUsage() {
 function renderWindows() {
   const target = byId("windows");
   const items = state.windows || [];
-  if (!items.length) { target.innerHTML = '<div class="empty">还没有窗口</div>'; return; }
-  target.innerHTML = items.map((w) => {
+  const official = '<article class="card official-card"><div class="card-head"><div><div class="title">本机 Codex（官方）</div><div class="muted">原版 · 复用你的 ChatGPT/Codex 登录</div></div><span class="badge ok">官方</span></div><div class="official-note">直接打开系统里安装的官方 ChatGPT/Codex 默认资料。不会创建模型助手 CODEX_HOME，也不会进入第三方模型路由；官方模型请在原版客户端里选择。</div><div class="card-actions"><button class="primary" data-official-open="1">打开 / 切到原版 Codex</button></div></article>';
+  const managed = items.map((w) => {
     const current = state.switchModels.find((m) => m.slug === w.currentModel || m.id === w.currentModel || m.model === w.currentModel);
     const initial = routeById(w.initialModel);
     return '<article class="card"><div class="card-head"><div><div class="title">' + escapeHtml(w.name || w.id) + '</div><div class="muted">' + escapeHtml(w.id) + '</div></div><span class="badge ' + (w.running ? "ok" : "") + '">' + (w.running ? "运行中 · PID " + (w.pid || "") : "未运行") + '</span></div><div>当前模型：' + escapeHtml(current && current.name || w.currentModel || "未选择") + '</div><div class="muted">起始模型：' + escapeHtml(initial && initial.name || w.initialModel || "自动") + '</div><div class="card-actions"><button data-win-open="' + escapeHtml(w.id) + '">打开</button>' + (w.running ? '<button data-win-close="' + escapeHtml(w.id) + '">关闭</button>' : '') + '</div></article>';
   }).join("");
+  target.innerHTML = official + managed;
 }
 
 function renderThreads() {
@@ -45,14 +46,20 @@ function renderThreads() {
 
 function renderModels() {
   const showArchived = byId("showArchived").checked;
-  const routes = (state.routes || []).filter((r) => showArchived || !r.archived);
+  const query = byId("modelSearch").value.trim().toLowerCase();
+  const routes = (state.routes || []).filter((r) => {
+    if (!showArchived && r.archived) return false;
+    if (!query) return true;
+    return [r.name, r.vendor, r.model, r.endpoint].some((value) => String(value || "").toLowerCase().includes(query));
+  });
+  byId("modelCount").textContent = routes.length + " / " + (state.routes || []).length;
   const target = byId("models");
   target.innerHTML = routes.map((r) => {
     const official = r.protocol === "oauth";
     const ready = !!r.model && (r.noKey || r.hasKey || r.protocol === "oauth" || r.protocol === "chatgpt");
     const statusClass = r.verifiedAt ? "ok" : (ready ? "" : "warn");
     const statusText = r.archived ? "已归档" : (r.verifiedAt ? "已验证" : (ready ? "待验证" : "待配置"));
-    return '<article class="card"><div class="card-head"><div><div class="title">' + escapeHtml(r.name) + '</div><div class="muted">' + escapeHtml(r.vendor || "") + '</div></div><span class="badge ' + statusClass + '">' + statusText + '</span></div><code>' + escapeHtml(r.model || "") + '</code><div class="muted">' + escapeHtml(r.endpoint || (official ? "ChatGPT 登录" : "")) + '</div><div class="card-actions"><button data-open-model="' + escapeHtml(r.id) + '">打开 Codex</button>' + (official ? "" : '<button data-edit-model="' + escapeHtml(r.id) + '">编辑</button><button data-check-model="' + escapeHtml(r.id) + '">检查连接</button><button data-probe-model="' + escapeHtml(r.id) + '">真实验证</button>') + '</div></article>';
+    return '<article class="card model-card"><div class="card-head"><div><div class="title">' + escapeHtml(r.name) + '</div><div class="model-vendor">' + escapeHtml(r.vendor || "") + '</div></div><span class="badge ' + statusClass + '">' + statusText + '</span></div><code title="' + escapeHtml(r.model || "") + '">' + escapeHtml(r.model || "尚未选择模型 ID") + '</code><div class="muted model-endpoint" title="' + escapeHtml(r.endpoint || "") + '">' + escapeHtml(r.endpoint || (official ? "ChatGPT 登录" : "")) + '</div><div class="card-actions"><button data-open-model="' + escapeHtml(r.id) + '">' + (official ? "打开原版" : "打开") + '</button>' + (official ? "" : '<button data-edit-model="' + escapeHtml(r.id) + '">编辑</button><button data-check-model="' + escapeHtml(r.id) + '">检查</button><button data-probe-model="' + escapeHtml(r.id) + '">验证</button>') + '</div></article>';
   }).join("") || '<div class="empty">模型库为空</div>';
 
   const options = (state.switchModels || []).map((m) => '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name) + '</option>').join("");
@@ -138,6 +145,7 @@ document.addEventListener("click", async (event) => {
   if (!el) return;
   try {
     if (el.dataset.editModel) return openEditor(routeById(el.dataset.editModel));
+    if (el.dataset.officialOpen) { setStatus("正在打开本机原版 Codex…"); accept(await call("open-codex", ["official"])); return; }
     if (el.dataset.openModel) { setStatus("正在打开 Codex…"); accept(await call("open-codex", [el.dataset.openModel])); return; }
     if (el.dataset.checkModel) { setStatus("正在检查连接…"); setStatus((await call("check", [el.dataset.checkModel])).message || "连接正常"); return; }
     if (el.dataset.probeModel) { setStatus("正在真实验证…"); accept(await call("probe", [el.dataset.probeModel])); return; }
@@ -151,6 +159,7 @@ byId("diagBtn").addEventListener("click", async () => { try { setStatus("正在�
 byId("dataBtn").addEventListener("click", () => window.cma.openDataDir());
 byId("addBtn").addEventListener("click", () => openEditor(null));
 byId("showArchived").addEventListener("change", renderModels);
+byId("modelSearch").addEventListener("input", renderModels);
 byId("newWindowBtn").addEventListener("click", async () => { try { const id = byId("newWindowModel").value; setStatus("正在新建窗口…"); accept(await call("new-window", [id])); } catch(e){ setStatus(e.message,true); } });
 byId("modelForm").addEventListener("submit", saveEditor);
 

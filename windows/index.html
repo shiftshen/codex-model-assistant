@@ -47,11 +47,17 @@
     </section>
 
     <section>
-      <div class="section-head">
-        <h2>模型库</h2>
-        <label><input id="showArchived" type="checkbox"> 显示归档</label>
+      <div class="section-head models-head">
+        <div>
+          <h2>模型库</h2>
+          <span id="modelCount" class="muted"></span>
+        </div>
+        <div class="model-tools">
+          <input id="modelSearch" class="search" type="search" placeholder="搜索名称 / 供应商 / 模型 ID">
+          <label class="compact-check"><input id="showArchived" type="checkbox"> 归档</label>
+        </div>
       </div>
-      <div id="models" class="grid"></div>
+      <div id="models" class="models-grid"></div>
     </section>
   </main>
 
