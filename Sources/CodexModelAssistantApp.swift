@@ -100,6 +100,8 @@ struct ModelLibraryView: View {
                 .help("配置模型、检查连接、看诊断——都在这一个弹窗里")
             Menu {
                 Button("运行诊断") { Task { await library.perform("diagnostics") } }
+                Button("打开本机 Codex（官方）") { Task { await library.openCodex("official") } }
+                Divider()
                 Divider()
                 Button("导入模型配置…") { Task { await library.importLibrary() } }
                 Button("导出模型配置…") { Task { await library.exportLibrary() } }
@@ -127,6 +129,7 @@ struct ModelLibraryView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
+                    officialCodexCard
                     ForEach(library.windows) { window in windowCard(window) }
                     newWindowCard
                 }
@@ -221,6 +224,35 @@ struct ModelLibraryView: View {
         }
         .padding(12)
         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var officialCodexCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "app.badge.checkmark").foregroundStyle(.blue)
+                Text("本机 Codex（官方）").font(.system(size: 15, weight: .semibold))
+                Text("原版").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(Color.blue.opacity(0.12), in: Capsule())
+                Spacer()
+            }
+            Text("就是 /Applications/Codex.app 的默认资料：复用你已经登录的 ChatGPT 账号、原任务库和官方模型选择器。")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("不经过模型助手路由 · 不创建独立 CODEX_HOME · 不使用 --user-data-dir")
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Button("打开 / 切到原版 Codex") { Task { await library.openCodex("official") } }
+                    .buttonStyle(.borderedProminent).controlSize(.small).disabled(library.busy)
+                Spacer()
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blue.opacity(0.32), lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture { Task { await library.openCodex("official") } }
+        .help("打开你本机默认的 Codex.app。Dock 里的图标会和可切换窗口共用，因此请从这里进入官方原版。")
     }
 
     private func windowCard(_ window: WorkWindow) -> some View {
