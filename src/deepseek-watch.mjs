@@ -7,6 +7,12 @@
 //
 // 采样方式：解析 api.deepseek.com 的 IP，然后周期性看有没有进程跟这些 IP
 // 建立了连接。DeepSeek 的请求通常要跑几秒（上下文大），所以轮询抓得住。
+//
+// 已知局限（别把这个数字当成"调用次数"直接用）：api.deepseek.com 落在
+// CloudFront 的共享 IP 上，浏览器打开 deepseek 官网时那条 keep-alive 连接
+// 会落进同一个 IP。所以命中要分两类看——"浏览器"那一类是噪声，真正说明
+// 问题的是非浏览器进程。要彻底消掉噪声得按 TLS SNI 匹配（需要 tcpdump/root），
+// 这里退一步：分开计数，别让噪声淹掉信号。
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -130,10 +136,12 @@ async function main() {
   let ips = await resolveHostIPs();
   let lastDns = Date.now();
   let hits = 0;
+  let apiHits = 0;
+  let browserHits = 0;
   let samples = 0;
 
   console.log(`开始监控 ${HOST}（目标 IP: ${ips.join(", ") || "解析失败"}），最长 ${hours} 小时`);
-  await writeState({ startedAt: new Date().toISOString(), host: HOST, ips, hours, hits: 0, samples: 0, running: true });
+  await writeState({ startedAt: new Date().toISOString(), host: HOST, ips, hours, hits: 0, apiHits: 0, browserHits: 0, samples: 0, running: true });
 
   while (Date.now() < deadline) {
     if (Date.now() - lastDns > DNS_REFRESH_MS) {
@@ -156,13 +164,16 @@ async function main() {
       };
       await appendRecord(record);
       hits += 1;
+      // 浏览器是共享 IP 带来的噪声，单独计数，别混进"谁在调 API"里。
+      if (record.kind === "浏览器") browserHits += 1;
+      else apiHits += 1;
       console.log(`[${new Date().toLocaleTimeString("zh-CN")}] ${record.kind} ← ${record.command} (pid ${record.pid})`);
     }
-    await writeState({ startedAt: new Date().toISOString(), host: HOST, ips, hours, hits, samples, running: true, updatedAt: new Date().toISOString() });
+    await writeState({ startedAt: new Date().toISOString(), host: HOST, ips, hours, hits, apiHits, browserHits, samples, running: true, updatedAt: new Date().toISOString() });
     await new Promise((resolve) => setTimeout(resolve, SAMPLE_MS));
   }
-  await writeState({ host: HOST, ips, hours, hits, samples, running: false, endedAt: new Date().toISOString() });
-  console.log(`监控结束：共抓到 ${hits} 次调用`);
+  await writeState({ host: HOST, ips, hours, hits, apiHits, browserHits, samples, running: false, endedAt: new Date().toISOString() });
+  console.log(`监控结束：非浏览器命中 ${apiHits} 次，浏览器噪声 ${browserHits} 次`);
 }
 
 // 用绝对路径比较：直接 `node src/deepseek-watch.mjs` 时 argv[1] 是相对路径，
