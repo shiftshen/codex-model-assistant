@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.3
+
+### Conversation attribution
+- Route and fallback logs now persist the Codex session/thread id for each real request.
+- Live-thread accounting can recover a missing thread model only from an exact same-session route-log match; it never guesses from window defaults.
+- Active thread rows now show the owning window/scope and Thread ID and can open the corresponding Codex window.
+- Fallback banners explicitly describe fallback as a per-request event, distinguish stale history from current fallback configuration, and link to the matching live thread when available.
+
 ## 3.0.2
 
 ### macOS model library

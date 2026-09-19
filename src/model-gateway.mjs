@@ -198,7 +198,7 @@ export async function compactForWindow({ store, route, payload, limit, signal, k
     }
     // 摘要请求同样会真花钱，而且带着整段历史（上下文最大的请求）。
     // 它绕过了上面那个路由候选循环，所以必须单独记一笔——否则「今天请求都去了谁」是漏的。
-    await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary" });
+    await noteRoute(store.root, summarizer, { model: summarizer.model, kind: "summary", sessionId });
     const result = await upstream(summarizer, key, suffix, summaryBody, 120000, signal, sessionId);
     const body = await limitedJSON(result.body, responseLimitBytes);
     if (summarizer.protocol === "chat") summary = String(body?.choices?.[0]?.message?.content ?? "").trim();
@@ -251,10 +251,10 @@ function isOpencodeEndpoint(endpoint) {
 // 每个请求实际走了哪个上游，都要留一条记录。
 // 用户问「我的钱到底花在谁那儿」时，靠推理和日志都太绕——这条记录是直接答案：
 // 最近 N 次请求分别打到了哪个域名、用的哪个条目。
-export async function noteRoute(root, route, { model = "", fallback = false, kind = "request" } = {}) {
+export async function noteRoute(root, route, { model = "", fallback = false, kind = "request", sessionId = "" } = {}) {
   let host = "";
   try { host = new URL(route.endpoint).hostname; } catch { host = route.endpoint || ""; }
-  const entry = { at: new Date().toISOString(), route: route.id, name: route.name, host, model, fallback, kind };
+  const entry = { at: new Date().toISOString(), route: route.id, name: route.name, host, model, fallback, kind, sessionId: String(sessionId ?? "").trim() };
   try {
     const file = path.join(root, "route-log.json");
     let list = [];
@@ -289,12 +289,13 @@ export async function noteRoute(root, route, { model = "", fallback = false, kin
   return entry;
 }
 
-export async function noteFallback(root, from, to, reason) {
+export async function noteFallback(root, from, to, reason, { sessionId = "" } = {}) {
   const entry = {
     at: new Date().toISOString(),
     from: from.id, fromName: from.name,
     to: to.id, toName: to.name,
     reason: String(reason ?? "").replace(/\s+/g, " ").slice(0, 200),
+    sessionId: String(sessionId ?? "").trim(),
   };
   process.stdout.write(`[fallback] 「${entry.fromName}」失败 → 已改用「${entry.toName}」（会按它自己的计费扣）：${entry.reason}\n`);
   try {
@@ -561,8 +562,8 @@ export function createGateway(store = new ModelStore(), options = {}) {
         // 「这次请求要打给谁」写在真正发起调用之前。
         // 放在响应之后写会有两个毛病：一是客户端拿到响应时记录可能还没落盘（测试与界面都会读到空），
         // 二是中途失败就什么都不留下——而用户核对扣费方，靠的正是这条记录。
-        if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")));
-        await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0 });
+        if (candidateIndex > 0) await noteFallback(store.root, route, target, errorMessage(lastError ?? new Error("首选条目不可用")), { sessionId: payload.session_id });
+        await noteRoute(store.root, target, { model: target.model, fallback: candidateIndex > 0, sessionId: payload.session_id });
         // 从真正发起请求就开始计时：供应商连响应头都不给的情况同样会断开并转备用。
         const callSignal = attemptSignal();
         const attempts = protocolChain(target.protocol);

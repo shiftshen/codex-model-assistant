@@ -182,18 +182,40 @@ struct ModelLibraryView: View {
     }
 
     private func liveThreadRow(_ thread: LiveThread) -> some View {
-        HStack(spacing: 9) {
-            Circle().fill(threadColor(thread)).frame(width: 7, height: 7)
-            Text(thread.place).font(.caption.weight(.semibold)).lineLimit(1).frame(width: 108, alignment: .leading)
-            Text(thread.headline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            Spacer(minLength: 6)
-            Text(thread.model ?? "未知模型")
-                .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
-            Text(thread.billing?.label ?? "未知上游")
-                .font(.caption.weight(.semibold)).foregroundStyle(threadColor(thread)).lineLimit(1)
-            Text("\(thread.minutesAgo ?? 0) 分钟前").font(.caption2).foregroundStyle(.secondary)
+        Button {
+            Task { await library.openThread(thread) }
+        } label: {
+            HStack(spacing: 9) {
+                Circle().fill(threadColor(thread)).frame(width: 7, height: 7)
+                Text(thread.scope ?? "未知窗口")
+                    .font(.caption.weight(.semibold)).lineLimit(1).frame(width: 76, alignment: .leading)
+                Text(thread.place).font(.caption.weight(.semibold)).lineLimit(1).frame(width: 92, alignment: .leading)
+                Text(thread.headline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text("#\(thread.id.prefix(8))").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                Spacer(minLength: 6)
+                Text((thread.model?.isEmpty == false ? thread.model : nil) ?? "未记录模型")
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                Text(thread.billing?.label ?? "未知上游")
+                    .font(.caption.weight(.semibold)).foregroundStyle(threadColor(thread)).lineLimit(1)
+                Text("\(thread.minutesAgo ?? 0) 分钟前").font(.caption2).foregroundStyle(.secondary)
+                Image(systemName: "arrow.up.forward.app").font(.caption2).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
         }
-        .help("\(thread.scope ?? "") ｜ 目录 \(thread.cwd ?? "?") ｜ 模型 \(thread.model ?? "?") ｜ 费用：\(thread.billing?.label ?? "未知")（\(thread.billing?.detail ?? "")）")
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("复制 Thread ID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(thread.id, forType: .string)
+            }
+            if let cwd = thread.cwd, !cwd.isEmpty {
+                Button("复制工作目录") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(cwd, forType: .string)
+                }
+            }
+        }
+        .help("点击打开所属窗口｜Thread \(thread.id) ｜ \(thread.scope ?? "未知窗口") ｜ 目录 \(thread.cwd ?? "?") ｜ provider \(thread.providerID ?? "?") ｜ route \(thread.routeName ?? thread.routeID ?? "未记录") ｜ 模型 \((thread.model?.isEmpty == false ? thread.model : nil) ?? "未记录") ｜ 费用：\(thread.billing?.label ?? "未知")（\(thread.billing?.detail ?? "")）")
     }
 
     // 按量计费的花的是真金白银，用橙色；订阅和包月额度是已经付过的，压成冷色。
@@ -210,20 +232,47 @@ struct ModelLibraryView: View {
     // 静默 fallback 花钱这件事必须显眼：用户选了订阅制的模型，
     // 结果请求失败后网关改用按量计费的备用条目，账单上却看不出来。
     private func fallbackBanner(_ event: FallbackEvent) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("有请求被自动改用备用模型：\(event.fromName) → \(event.toName)")
+        let stillConfigured = library.models.first { $0.id == event.from }?.fallback == event.to
+        let linkedThread = event.sessionId.flatMap { id in library.liveThreads.first { $0.id == id } }
+        let recent = fallbackIsRecent(event)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: recent ? "exclamationmark.triangle.fill" : "clock.arrow.circlepath")
+                .foregroundStyle(recent ? .orange : .secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(recent ? "备用模型触发记录" : "历史备用切换记录")：\(event.fromName) → \(event.toName)")
                     .font(.caption.weight(.semibold))
-                Text("备用条目按它自己的账户计费，可能和你以为的在用的套餐不是同一个。最近一次：\(event.at)　原因：\(event.reason ?? "未记录")")
+                Text("fallback 只对那一次失败请求生效，不代表这个窗口或所有对话之后一直使用备用模型。发生时间：\(event.at)　原因：\(event.reason ?? "未记录")")
                     .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text("要么修好首选条目，要么在模型库里把它的「失败时改用」清空。")
-                    .font(.caption2).foregroundStyle(.secondary)
+                Text(stillConfigured ? "当前规则：这个首选模型仍配置了该备用模型，下一次失败仍可能再次触发。" : "当前规则：这个备用配置现在已经不存在；这里展示的是历史事件。")
+                    .font(.caption2).foregroundStyle(stillConfigured ? .orange : .secondary)
+                if let thread = linkedThread {
+                    Button("打开对应对话所在窗口：\(thread.scope ?? "?") · \(thread.place) · \(thread.headline) · #\(thread.id.prefix(8))") {
+                        Task { await library.openThread(thread) }
+                    }
+                    .buttonStyle(.link).font(.caption2)
+                } else if let sessionId = event.sessionId, !sessionId.isEmpty {
+                    Text("Thread：\(sessionId)（当前不在最近活跃对话列表，可复制 ID 追踪）")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .contextMenu {
+                            Button("复制 Thread ID") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(sessionId, forType: .string)
+                            }
+                        }
+                } else {
+                    Text("旧版本事件没有记录 Thread ID，因此这一次无法再追溯到具体对话；3.0.3 起的新事件会精确绑定对话。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             Spacer()
         }
         .padding(12)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .background((recent ? Color.orange : Color.secondary).opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func fallbackIsRecent(_ event: FallbackEvent) -> Bool {
+        guard let date = ISO8601DateFormatter().date(from: event.at) else { return false }
+        return Date().timeIntervalSince(date) < 6 * 3600
     }
 
     private var officialCodexCard: some View {

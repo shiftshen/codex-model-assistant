@@ -14,8 +14,8 @@
 
 | | |
 |---|---|
-| 版本 | **3.0.2** |
-| 安装包 | `release/Model-Router-3.0.2-universal.dmg`（通用二进制：Apple Silicon + Intel） |
+| 版本 | **3.0.3** |
+| 安装包 | `release/Model-Router-3.0.3-universal.dmg`（通用二进制：Apple Silicon + Intel） |
 | 系统要求 | macOS 12.0 起 |
 | SHA-256 | 见 `release/SHA256SUMS.txt` |
 | 签名 | Developer ID Application（Chinda Lorcharoen）；正式 Release 执行 Apple notarization + staple，并用 `spctl` / `stapler` 验证 |
@@ -67,6 +67,7 @@ Windows 版随 3.0 品牌统一，目标 Windows 10/11 x64，仍标记为 Previe
 - 连接检查、真实推理验证、带时间的验证记录；改 Key / 模型 / 地址 / 协议后失效。
 - 每个模型条目独立窗口、任务库和模型配置，多开不修改全局默认模型。
 - **3.0.1 多开智能配置统一**：官方 ChatGPT Desktop 与所有隔离 `CODEX_HOME` 工作窗口共用全局 `AGENTS.md`、skills、plugins、hooks 和认证资源；窗口配置从 `~/.codex/config.toml` 继承 reasoning / plan / agents 配置，只覆盖模型与 provider。默认开发推理统一为 Medium，避免不同窗口出现 low 导致的明显能力落差。
+- **3.0.3 对话/fallback 可追踪**：route-log 与 fallback 事件记录 `sessionId`；首页活动对话显示所属窗口、目录、Thread ID 并可点击打开对应窗口。fallback 明确区分“历史单次触发”和当前配置，不再让旧事件看起来像所有对话都在持续使用备用模型。
 - 窗口多开：任意数量窗口同时运行，每个窗口自带一份 `CODEX_HOME` 与浏览器数据目录（`--user-data-dir` 与 `CODEX_ELECTRON_USER_DATA_PATH` 同值），互不干扰，也和 ChatGPT Desktop（官方）的 Electron 状态完全隔离；窗口列表里可以新建、打开、关闭、重命名、删除，底层按平台读取真实进程命令行判定哪个窗口在跑（PID 一并显示）。
 - 无密钥 JSON 导入导出、原子配置写入、冲突检查、备份、诊断。
 - loopback 网关按实例令牌鉴权；Responses、Chat Completions、Anthropic Messages 三类接口。

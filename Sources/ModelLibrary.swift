@@ -193,15 +193,19 @@ struct RecentRoute: Decodable, Identifiable, Hashable {
     var host: String
     var model: String?
     var fallback: Bool?
+    var sessionId: String?
     var id: String { "\(at)|\(route)|\(host)" }
 }
 
 struct FallbackEvent: Decodable, Identifiable, Hashable {
     var at: String
+    var from: String?
     var fromName: String
+    var to: String?
     var toName: String
     var reason: String?
-    var id: String { "\(at)|\(fromName)|\(toName)" }
+    var sessionId: String?
+    var id: String { "\(at)|\(fromName)|\(toName)|\(sessionId ?? "")" }
 }
 
 // 一个对话（thread）当前用的模型，以及这块钱从哪出。
@@ -222,6 +226,11 @@ struct LiveThread: Decodable, Identifiable, Hashable {
     var model: String?
     var providerID: String?
     var scope: String?
+    var scopeKey: String?
+    var homePath: String?
+    var routeID: String?
+    var routeName: String?
+    var lastRoutedAt: String?
     var minutesAgo: Int?
     var sizeBytes: Int64?
     var billing: ThreadBilling?
@@ -558,6 +567,31 @@ final class LibraryViewModel: ObservableObject {
         // 已经在跑的窗口不会有新 pid，但同样应该被提到最前。
         raiseWindowIfNeeded(response.pid ?? response.window?.pid ?? windows.first { $0.id == id }?.pid)
         busy = false
+    }
+
+    // 活跃对话来自哪个 CODEX_HOME 是账本扫描出来的确定事实。点击一条对话时先打开它所属窗口；
+    // Desktop 暂无稳定的“按 thread id 直达某条会话”公开接口，所以绝不伪造跳转。
+    func openThread(_ thread: LiveThread) async {
+        let key = (thread.scopeKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            success = false
+            message = "这条对话缺少窗口归属，Thread ID：\(thread.id)"
+            return
+        }
+        if key == "official" {
+            await openCodex("official")
+            return
+        }
+        if windows.contains(where: { $0.id == key }) {
+            await openWindow(key)
+            return
+        }
+        if unmanaged.contains(where: { $0.windowID == key }) {
+            await openUnmanaged(key)
+            return
+        }
+        success = false
+        message = "找到了对话 \(thread.id)，但它所属的窗口「\(thread.scope ?? key)」当前不在窗口注册表里"
     }
 
     // 新窗口可能开在当前窗口后面，看起来像「点了没反应」。用进程号把它提到最前。

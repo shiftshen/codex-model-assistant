@@ -15,6 +15,7 @@ function setStatus(message, error) {
 }
 
 function routeById(id) { return state.routes.find((item) => item.id === id); }
+function baseName(value) { return String(value || "").replaceAll("\\\\", "/").split("/").filter(Boolean).at(-1) || "?"; }
 
 function renderUsage() {
   const u = state.todayUsage;
@@ -40,7 +41,10 @@ function renderThreads() {
   if (!rows.length) { target.innerHTML = '<div class="empty">最近 30 分钟没有活跃对话</div>'; return; }
   target.innerHTML = rows.slice(0, 12).map((t) => {
     const billing = t.billing || {};
-    return '<div class="list-row"><strong>' + escapeHtml(t.scope || t.place || "?") + '</strong><span title="' + escapeHtml(t.title || "") + '">' + escapeHtml(t.title || String(t.id || "").slice(0,8)) + '</span><code>' + escapeHtml(t.model || "未知模型") + '</code><span class="billing-' + escapeHtml(billing.kind || "unknown") + '">' + escapeHtml(billing.label || "未知上游") + '</span><span class="muted">' + escapeHtml(t.minutesAgo == null ? "" : t.minutesAgo + " 分钟") + '</span></div>';
+    const title = t.title || String(t.id || "").slice(0,8);
+    const where = (t.scope || "未知窗口") + " · " + baseName(t.cwd);
+    const detail = "Thread " + (t.id || "?") + " | provider " + (t.providerID || "?") + " | route " + (t.routeName || t.routeID || "未记录");
+    return '<button class="list-row thread-row" data-thread-open="' + escapeHtml(t.scopeKey || "") + '" data-thread-id="' + escapeHtml(t.id || "") + '" title="' + escapeHtml(detail) + '"><strong>' + escapeHtml(where) + '</strong><span>' + escapeHtml(title) + ' <small>#' + escapeHtml(String(t.id || "").slice(0,8)) + '</small></span><code>' + escapeHtml(t.model || "未记录模型") + '</code><span class="billing-' + escapeHtml(billing.kind || "unknown") + '">' + escapeHtml(billing.label || "未知上游") + '</span><span class="muted">' + escapeHtml(t.minutesAgo == null ? "" : t.minutesAgo + " 分钟") + '</span></button>';
   }).join("");
 }
 
@@ -68,10 +72,18 @@ function renderModels() {
 }
 
 function renderFallbacks() {
-  if (state.fallbacks && state.fallbacks.length) {
-    const f = state.fallbacks[0];
-    setStatus("最近有自动备用：" + f.fromName + " → " + f.toName + "。备用条目按自己的账户计费。", false);
-  }
+  const target = byId("fallbacks");
+  const rows = state.fallbacks || [];
+  if (!rows.length) { target.innerHTML = ""; return; }
+  const f = rows[0];
+  const from = routeById(f.from);
+  const stillConfigured = !!from && from.fallback === f.to;
+  const recent = Number.isFinite(Date.parse(f.at)) && Date.now() - Date.parse(f.at) < 6 * 3600 * 1000;
+  const thread = f.sessionId ? (state.threads || []).find((t) => t.id === f.sessionId) : null;
+  const threadHtml = thread
+    ? '<button data-thread-open="' + escapeHtml(thread.scopeKey || "") + '" data-thread-id="' + escapeHtml(thread.id) + '">打开对应对话所在窗口：' + escapeHtml((thread.scope || "?") + " · " + baseName(thread.cwd) + " · #" + thread.id.slice(0,8)) + '</button>'
+    : (f.sessionId ? '<div class="muted">Thread：' + escapeHtml(f.sessionId) + '（当前不在活跃列表）</div>' : '<div class="muted">旧版本事件未记录 Thread ID，无法追溯具体对话。</div>');
+  target.innerHTML = '<section class="fallback-card ' + (recent ? "recent" : "stale") + '"><strong>' + (recent ? "备用模型触发记录" : "历史备用切换记录") + '：' + escapeHtml(f.fromName) + ' → ' + escapeHtml(f.toName) + '</strong><div>fallback 只对那一次失败请求生效，不代表窗口或所有对话持续使用备用模型。</div><div class="muted">时间：' + escapeHtml(f.at) + ' · 原因：' + escapeHtml(f.reason || "未记录") + '</div><div class="muted">当前规则：' + (stillConfigured ? "仍配置该备用，下次失败仍可能触发" : "该备用配置已经不存在，这里只是历史记录") + '</div>' + threadHtml + '</section>';
 }
 
 function accept(data) {
@@ -152,6 +164,15 @@ document.addEventListener("click", async (event) => {
     if (el.dataset.probeModel) { setStatus("正在真实验证…"); accept(await call("probe", [el.dataset.probeModel])); return; }
     if (el.dataset.winOpen) { setStatus("正在打开窗口…"); accept(await call("open-window", [el.dataset.winOpen])); return; }
     if (el.dataset.winClose) { setStatus("正在关闭窗口…"); accept(await call("close-window", [el.dataset.winClose])); return; }
+    if (el.dataset.threadOpen) {
+      const key = el.dataset.threadOpen;
+      setStatus("正在打开对话所在窗口…");
+      if (key === "official") accept(await call("open-codex", ["official"]));
+      else if ((state.windows || []).some((w) => w.id === key)) accept(await call("open-window", [key]));
+      else if (key) accept(await call("open-codex", [key]));
+      else setStatus("这条对话缺少窗口归属，Thread ID：" + (el.dataset.threadId || "?"), true);
+      return;
+    }
   } catch (error) { setStatus(error.message, true); }
 });
 

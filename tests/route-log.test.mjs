@@ -39,18 +39,20 @@ async function listen(server, context) {
 
 test("noteRoute / noteFallback 真的把记录写进磁盘（不是只有返回值）", async (context) => {
   const store = await fixture(context);
-  await noteRoute(store.root, { id: "r1", name: "路由一", endpoint: "https://opencode.ai/zen/go/v1" }, { model: "m" });
-  await noteFallback(store.root, { id: "a", name: "A" }, { id: "b", name: "B" }, "测试原因");
+  await noteRoute(store.root, { id: "r1", name: "路由一", endpoint: "https://opencode.ai/zen/go/v1" }, { model: "m", sessionId: "thread-123" });
+  await noteFallback(store.root, { id: "a", name: "A" }, { id: "b", name: "B" }, "测试原因", { sessionId: "thread-123" });
 
   const routes = JSON.parse(await fs.readFile(path.join(store.root, "route-log.json"), "utf8"));
   assert.equal(routes.length, 1);
   assert.equal(routes[0].route, "r1");
   assert.equal(routes[0].host, "opencode.ai", "应该记下真实域名，用户就是靠这个核对扣费方");
+  assert.equal(routes[0].sessionId, "thread-123", "路由日志必须绑定具体对话，否则无法回答哪条对话在扣费");
 
   const fallbacks = JSON.parse(await fs.readFile(path.join(store.root, "fallback-events.json"), "utf8"));
   assert.equal(fallbacks.length, 1);
   assert.equal(fallbacks[0].fromName, "A");
   assert.equal(fallbacks[0].toName, "B");
+  assert.equal(fallbacks[0].sessionId, "thread-123", "fallback 事件必须能追到具体 thread");
 });
 
 test("读回来的是同一批（读接口不能自己 catch 成空数组掩盖问题）", async (context) => {
@@ -89,7 +91,7 @@ test("首选失败改用备用时，两个文件都要留下证据，界面才�
   const headers = { "content-type": "application/json", authorization: `Bearer ${await store.token("router")}` };
   const response = await fetch(`${gateway}/router/v1/responses`, {
     method: "POST", headers,
-    body: JSON.stringify({ model: "primary", input: [{ role: "user", content: [{ type: "input_text", text: "你好" }] }], stream: false }),
+    body: JSON.stringify({ model: "primary", session_id: "thread-fallback-1", input: [{ role: "user", content: [{ type: "input_text", text: "你好" }] }], stream: false }),
   });
   assert.equal(response.status, 200);
   assert.match(await response.text(), /FALLBACK_OK/);
@@ -102,6 +104,7 @@ test("首选失败改用备用时，两个文件都要留下证据，界面才�
   assert.equal(fallbacks.length, 1, "用了备用就必须留下记录");
   assert.equal(fallbacks[0].from, "primary");
   assert.equal(fallbacks[0].to, "backup");
+  assert.equal(fallbacks[0].sessionId, "thread-fallback-1");
   // 记的是真实失败原因，不是占位文案——用户看到「为什么换了」才有用
   assert.match(fallbacks[0].reason, /HTTP 500/);
 
@@ -111,8 +114,10 @@ test("首选失败改用备用时，两个文件都要留下证据，界面才�
   assert.equal(routes.length, 2);
   assert.equal(routes[0].route, "backup");
   assert.equal(routes[0].fallback, true);
+  assert.equal(routes[0].sessionId, "thread-fallback-1");
   assert.equal(routes[1].route, "primary");
   assert.equal(routes[1].fallback, false);
+  assert.equal(routes[1].sessionId, "thread-fallback-1");
 
   // 界面拿到的就是这两份数据
   const service = new ProductService(store);

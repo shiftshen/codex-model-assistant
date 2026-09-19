@@ -1,0 +1,47 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+
+const sourcePath = new URL("../Sources/CodexModelAssistantApp.swift", import.meta.url);
+
+test("macOS 模型库二级 sheet 必须挂在模型库层，不能退回底层主窗口", async () => {
+  const source = await fs.readFile(sourcePath, "utf8");
+  const modelLibraryStart = source.indexOf("private var modelLibrary");
+  const renameStart = source.indexOf("private func renameSheet", modelLibraryStart);
+  assert.ok(modelLibraryStart > 0 && renameStart > modelLibraryStart);
+
+  const root = source.slice(0, modelLibraryStart);
+  const modelLibrary = source.slice(modelLibraryStart, renameStart);
+
+  assert.match(root, /\.sheet\(isPresented: \$showModels\)/);
+  assert.doesNotMatch(root, /\.sheet\(item: \$editing\)/, "编辑 sheet 挂在底层窗口会导致模型库里的 + 看似点不动");
+  assert.doesNotMatch(root, /\.sheet\(isPresented: \$library\.showDiscovery\)/);
+  assert.doesNotMatch(root, /\.sheet\(isPresented: \$library\.showDiagnostics\)/);
+
+  assert.match(modelLibrary, /\.sheet\(item: \$editing\)/);
+  assert.match(modelLibrary, /\.sheet\(isPresented: \$library\.showDiscovery\)/);
+  assert.match(modelLibrary, /\.sheet\(isPresented: \$library\.showDiagnostics\)/);
+});
+
+test("macOS 活跃对话必须可点击打开所属窗口，并显示 Thread 追踪信息", async () => {
+  const source = await fs.readFile(sourcePath, "utf8");
+  const start = source.indexOf("private func liveThreadRow");
+  const end = source.indexOf("private func threadColor", start);
+  const block = source.slice(start, end);
+  assert.match(block, /Button\s*\{/);
+  assert.match(block, /library\.openThread\(thread\)/);
+  assert.match(block, /复制 Thread ID/);
+  assert.match(block, /thread\.scope/);
+  assert.match(block, /thread\.id\.prefix\(8\)/);
+});
+
+test("fallback banner 必须说明 fallback 是单次请求，不得暗示整窗持续使用备用", async () => {
+  const source = await fs.readFile(sourcePath, "utf8");
+  const start = source.indexOf("private func fallbackBanner");
+  const end = source.indexOf("private func fallbackIsRecent", start);
+  const block = source.slice(start, end);
+  assert.match(block, /只对那一次失败请求生效/);
+  assert.match(block, /历史备用切换记录/);
+  assert.match(block, /当前规则/);
+  assert.match(block, /Thread ID/);
+});

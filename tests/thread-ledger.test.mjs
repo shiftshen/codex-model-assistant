@@ -6,7 +6,9 @@ import path from "node:path";
 import {
   billingFor,
   lastThreadSettings,
+  lastTurnContext,
   listLiveThreads,
+  liveThreadRows,
   routesByModel,
   stripModelDedupe,
 } from "../src/thread-ledger.mjs";
@@ -37,6 +39,19 @@ test("对话设置：取最后一条 thread_settings", () => {
     providerID: "cma_router",
     cwd: "/tmp/new",
   });
+});
+
+test("新版 Codex：没有 thread_settings 时读取正式 turn_context 的模型", () => {
+  const real = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    ordinal: 5,
+    type: "turn_context",
+    payload: { model: "ark-code-latest", cwd: "/tmp/ni-ha", collaboration_mode: { settings: { reasoning_effort: "medium" } } },
+  });
+  assert.deepEqual(lastTurnContext(real), { model: "ark-code-latest", cwd: "/tmp/ni-ha" });
+
+  const fake = JSON.stringify({ type: "response_item", payload: { text: real } });
+  assert.equal(lastTurnContext(fake), null, "正文或工具输出里嵌套的 turn_context 不能算正式事件");
 });
 
 // 这是踩过的坑：会话正文里也会出现 thread_settings_applied 这几个字（讨论这个
@@ -141,6 +156,43 @@ test("活跃对话：读到模型、目录与标题", async (context) => {
   assert.equal(threads[0].cwd, "/Users/shift/Documents/ChatGPT/openclaw");
   assert.match(threads[0].title, /额度/);
   assert.equal(billingFor(threads[0], routesByModel(routes)).kind, "balance");
+});
+
+test("活跃对话：新版 rollout 只有 turn_context 时也能恢复真实模型", async (context) => {
+  const { root, day } = await liveFixture(context);
+  const sessionId = "01a0ffff-0000-7000-9000-000000000088";
+  const file = path.join(day, `rollout-2026-09-19T00-00-00-${sessionId}.jsonl`);
+  const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: "session_meta", payload: { session_id: sessionId, cwd: "/tmp/ni-ha", model_provider: "cma_router" } });
+  const turn = JSON.stringify({ timestamp: new Date().toISOString(), type: "turn_context", payload: { model: "deepseek-flash", cwd: "/tmp/ni-ha" } });
+  await fs.writeFile(file, `${meta}\n${turn}\n`);
+
+  const rows = await liveThreadRows(root, routes, { withinMinutes: 30, homeDirectory: path.join(root, "nohome") });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].model, "deepseek-flash");
+  assert.equal(rows[0].providerID, "cma_router");
+  assert.equal(rows[0].billing.kind, "balance");
+});
+
+test("活跃对话：thread_settings 缺模型时，只用同 sessionId 的 route-log 精确补齐", async (context) => {
+  const { root, day } = await liveFixture(context);
+  const sessionId = "01a0ffff-0000-7000-9000-000000000099";
+  const file = path.join(day, `rollout-2026-09-19T00-00-00-${sessionId}.jsonl`);
+  const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: "session_meta", payload: { session_id: sessionId, cwd: "/tmp/route-hint", model_provider: "cma_router" } });
+  const userTurn = JSON.stringify({ timestamp: new Date().toISOString(), type: "event_msg", payload: { type: "user_message", message: "没有 thread_settings 也要精确追踪" } });
+  await fs.writeFile(file, `${meta}\n${userTurn}\n`);
+  await fs.writeFile(path.join(root, "route-log.json"), JSON.stringify([
+    { at: new Date().toISOString(), route: "d1", name: "opencodeDS", host: "opencode.ai", model: "deepseek-v4.1-flash", fallback: false, kind: "request", sessionId },
+  ]));
+
+  const rows = await liveThreadRows(root, routes, { withinMinutes: 30, homeDirectory: path.join(root, "nohome") });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, sessionId);
+  assert.equal(rows[0].model, "deepseek-v4.1-flash");
+  assert.equal(rows[0].routeID, "d1");
+  assert.equal(rows[0].routeName, "opencodeDS");
+  assert.equal(rows[0].billing.kind, "quota");
+  assert.equal(rows[0].scopeKey, "router");
+  assert.match(rows[0].homePath, /router-v1\/codex-home$/);
 });
 
 test("活跃对话：太久没动的对话不回报", async (context) => {

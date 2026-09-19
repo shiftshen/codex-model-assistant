@@ -1,5 +1,12 @@
 # Model Router 3.0.0
 
+## 3.0.3 对话归属与 fallback 可追踪
+
+- route-log / fallback-events 新增 `sessionId`，未来每次备用切换都能定位到具体 Thread。
+- “正在跑的对话”显示所属窗口、目录、Thread ID，并可点击打开对应窗口；右键可复制 Thread ID/工作目录。
+- 当 thread_settings 缺 model 时，只允许用同 sessionId 的 route-log 精确补齐真实 route/model/计费方，不再用窗口默认模型猜。
+- 旧 fallback 事件明确标记为历史记录，并说明 fallback 只对单次失败请求生效，不代表所有对话持续使用备用模型。
+
 ## 3.0.2 模型库交互修复
 
 - 修复 macOS 模型库右上角“+”添加模型按钮点了无反应。

@@ -85,11 +85,45 @@ export function lastThreadSettings(text) {
   return null;
 }
 
+function parseTurnContextLine(line) {
+  if (!line.includes('"type":"turn_context"') && !line.includes('"type": "turn_context"')) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (parsed?.type !== "turn_context" || !parsed.payload?.model) return null;
+  return {
+    model: String(parsed.payload.model),
+    cwd: String(parsed.payload.cwd ?? ""),
+  };
+}
+
+export function lastTurnContext(text) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const context = parseTurnContextLine(lines[index]);
+    if (context) return context;
+  }
+  return null;
+}
+
 async function settingsFromTail(file, size) {
   for (const window of TAIL_WINDOWS) {
     const length = Math.min(window, size);
     const settings = lastThreadSettings(await readRange(file, size - length, length));
     if (settings) return settings;
+  }
+  return null;
+}
+
+async function turnContextFromTail(file, size) {
+  for (const window of TAIL_WINDOWS) {
+    const length = Math.min(window, size);
+    const context = lastTurnContext(await readRange(file, size - length, length));
+    if (context) return context;
   }
   return null;
 }
@@ -205,12 +239,13 @@ export async function readThreadCard(file, stat) {
   const size = stat?.size ?? (await fs.stat(file)).size;
   const head = await readRange(file, 0, Math.min(SESSION_HEAD_BYTES, size));
   const settings = (await settingsFromTail(file, size)) ?? lastThreadSettings(head);
+  const turnContext = settings ? null : ((await turnContextFromTail(file, size)) ?? lastTurnContext(head));
   const meta = sessionMeta(head);
   return {
     id: meta.id || path.basename(file).replace(/^rollout-/, "").replace(/\.jsonl$/, "").slice(-36),
     title: firstUserText(head),
-    cwd: settings?.cwd || meta.cwd || "",
-    model: settings?.model ?? "",
+    cwd: settings?.cwd || turnContext?.cwd || meta.cwd || "",
+    model: settings?.model || turnContext?.model || "",
     providerID: settings?.providerID || meta.provider || "",
     sizeBytes: size,
     lastWriteMs: stat?.mtimeMs ?? 0,
@@ -233,7 +268,7 @@ export async function listLiveThreads(root, { withinMinutes = 30, now = Date.now
       }
       if (stat.mtimeMs < cutoff) continue;
       const card = await readThreadCard(file, stat);
-      cards.push({ ...card, scope: scope.label, scopeKey: scope.key });
+      cards.push({ ...card, scope: scope.label, scopeKey: scope.key, homePath: scope.home });
     }
   }
   cards.sort((a, b) => b.lastWriteMs - a.lastWriteMs);
@@ -260,13 +295,41 @@ export function routesByModel(routes) {
   return index;
 }
 
+async function latestRouteHints(root) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(root, "route-log.json"), "utf8"));
+    if (!Array.isArray(list)) return new Map();
+    const hints = new Map();
+    for (const entry of list) {
+      const sessionId = String(entry?.sessionId ?? "").trim();
+      if (!sessionId) continue;
+      hints.set(sessionId, entry);
+    }
+    return hints;
+  } catch {
+    return new Map();
+  }
+}
+
 // 给界面用的成品：扫盘 + 判归属 + 算「几分钟前」，一次到位。
-export async function liveThreadRows(root, routes, { withinMinutes = 30, now = Date.now() } = {}) {
+export async function liveThreadRows(root, routes, { withinMinutes = 30, now = Date.now(), homeDirectory = os.homedir() } = {}) {
   const index = routesByModel(routes);
-  const threads = await listLiveThreads(root, { withinMinutes, now });
-  return threads.map((thread) => ({
-    ...thread,
-    billing: billingFor(thread, index),
-    minutesAgo: Math.max(0, Math.round((now - thread.lastWriteMs) / 60_000)),
-  }));
+  const routeByID = new Map(routes.map((route) => [String(route.id), route]));
+  const hints = await latestRouteHints(root);
+  const threads = await listLiveThreads(root, { withinMinutes, now, homeDirectory });
+  return threads.map((thread) => {
+    const hint = hints.get(thread.id) ?? null;
+    const hintedRoute = hint ? routeByID.get(String(hint.route ?? "")) ?? null : null;
+    const model = thread.model || String(hint?.model ?? "");
+    const billing = hintedRoute ? billingForRoute(hintedRoute) : billingFor({ ...thread, model }, index);
+    return {
+      ...thread,
+      model,
+      routeID: String(hint?.route ?? ""),
+      routeName: String(hint?.name ?? ""),
+      lastRoutedAt: String(hint?.at ?? ""),
+      billing,
+      minutesAgo: Math.max(0, Math.round((now - thread.lastWriteMs) / 60_000)),
+    };
+  });
 }
