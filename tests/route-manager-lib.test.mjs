@@ -85,6 +85,7 @@ test("prepares an isolated route home without changing the shared config", async
   await fs.mkdir(path.join(sharedHome, "skills"), { recursive: true });
   await fs.mkdir(path.join(sharedHome, "memories"), { recursive: true });
   await fs.writeFile(path.join(sharedHome, "auth.json"), '{"auth_mode":"chatgpt"}\n');
+  await fs.writeFile(path.join(sharedHome, "AGENTS.md"), "# Global smart-development rules\n");
   await fs.copyFile(workspace.configPath, path.join(sharedHome, "config.toml"));
   const original = await fs.readFile(path.join(sharedHome, "config.toml"), "utf8");
 
@@ -99,6 +100,8 @@ test("prepares an isolated route home without changing the shared config", async
   assert.equal(await fs.readFile(path.join(sharedHome, "config.toml"), "utf8"), original);
   assert.equal((await fs.lstat(path.join(result.homePath, "auth.json"))).isSymbolicLink(), true);
   assert.equal((await fs.lstat(path.join(result.homePath, "skills"))).isSymbolicLink(), true);
+  assert.equal((await fs.lstat(path.join(result.homePath, "AGENTS.md"))).isSymbolicLink(), true);
+  assert.equal(await fs.readFile(path.join(result.homePath, "AGENTS.md"), "utf8"), "# Global smart-development rules\n");
   assert.equal((await fs.lstat(path.join(result.homePath, "memories"))).isDirectory(), true);
   assert.equal((await fs.lstat(path.join(result.homePath, "memories"))).isSymbolicLink(), false);
   assert.equal(result.userDataPath, path.join(instanceRoot, "deepseek-pro", "browser-data"));

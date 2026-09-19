@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.1
+
+### Intelligence consistency
+- All isolated Codex homes now share the global `AGENTS.md` in addition to auth, skills, plugins and hooks.
+- Routed and switchable windows preserve global reasoning, plan-mode and `[agents]` configuration while overriding only model/provider routing.
+- Existing local Model Router homes are migrated to Medium reasoning / Medium plan defaults and the shared global agent rules.
+- Added regression coverage so future isolated environments cannot silently lose AGENTS or reasoning configuration.
+
 ## 3.0.0
 
 ### Brand

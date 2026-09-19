@@ -26,9 +26,11 @@
 
 ## 多开
 
+默认开发推理建议使用 `model_reasoning_effort = "medium"` 与 `plan_mode_reasoning_effort = "medium"`；复杂疑难任务再临时切 High/xHigh。Model Router 会把这套默认值带入所有新建/重开的隔离窗口，不再让某些窗口意外停留在 Low。
+
 每个模型条目有独立的 `CODEX_HOME` 和浏览器数据目录。不同条目可同时运行，同一条目重复启动由 Codex 复用已有窗口。需要相同模型多份窗口时可新增另一个模型条目。修改模型/协议后，关闭该条目的旧 Codex 窗口，再从助手启动。
 
-这是同一 macOS 用户下的多模型工作流，不是多租户权限隔离。官方登录信息、skills、plugins 复用当前用户资源；独立的是模型配置、任务库、memories 和窗口数据。若操作同一个代码目录，文件仍共享，建议在 Codex 中使用独立 worktree 避免同时覆盖。
+这是同一 macOS 用户下的多模型工作流，不是多租户权限隔离。3.0.1 起，官方登录信息、`AGENTS.md`、skills、plugins、hooks 和多智能体配置都复用当前用户资源；窗口自己的 `config.toml` 从全局配置继承 reasoning / plan / agents 设置，只覆盖模型/provider 路由。独立的是任务库、memories 和窗口数据。若操作同一个代码目录，文件仍共享，建议在 Codex 中使用独立 worktree 避免同时覆盖。
 
 ## 多窗口：同时开多个 Codex，每个都能换模型
 

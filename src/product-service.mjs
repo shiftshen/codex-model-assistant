@@ -48,6 +48,7 @@ import {
 } from "./platform-runtime.mjs";
 
 const sharedHome = path.join(os.homedir(), ".codex");
+const sharedRuntimeAssets = Object.freeze(["auth.json", "AGENTS.md", "skills", "plugins", "requirements.toml", "hooks.json"]);
 const execFileAsync = promisify(execFile);
 
 function composeConfig(source, marker, { model, provider, catalogPath, name, baseURL }) {
@@ -225,6 +226,17 @@ export class ProductService {
     this.store = store;
     // 官方库路径可注入：测试要把它指到临时目录，绝不能读到真实的 ~/.codex。
     this.officialHome = sharedHome;
+  }
+  async syncSharedRuntimeAssets(homePath) {
+    for (const name of sharedRuntimeAssets) {
+      const sourcePath = path.join(sharedHome, name);
+      try {
+        await fs.access(sourcePath);
+        await linkSharedAsset(sourcePath, path.join(homePath, name));
+      } catch (error) {
+        if (!["ENOENT", "EEXIST"].includes(error.code)) throw error;
+      }
+    }
   }
   // 窗口运行状态：id → pid（0 表示命令行里没有 pid，通常来自测试夹具）。
   async runningSlots() {
@@ -523,13 +535,7 @@ export class ProductService {
     const temporary = path.join(homePath, `.config-${randomUUID()}.toml`);
     await fs.writeFile(temporary, config, { mode: 0o600 });
     await fs.rename(temporary, path.join(homePath, "config.toml"));
-    for (const name of ["auth.json", "skills", "plugins", "requirements.toml", "hooks.json"]) {
-      const sourcePath = path.join(sharedHome, name);
-      try {
-        await fs.access(sourcePath);
-        await linkSharedAsset(sourcePath, path.join(homePath, name));
-      } catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
-    }
+    await this.syncSharedRuntimeAssets(homePath);
     await fs.mkdir(path.join(homePath, "memories"), { recursive: true, mode: 0o700 });
     return { route, homePath, userDataPath, diskCleanup };
   }
@@ -757,6 +763,7 @@ export class ProductService {
       try { await fs.access(path.join(target.home, "state_5.sqlite")); }
       catch (error) { if (error.code === "ENOENT") { skipped.push({ id: target.id, reason: "还没有任务库" }); continue; } throw error; }
       await atomicJSON(path.join(target.home, "model-catalog.json"), routerCatalog(table));
+      await this.syncSharedRuntimeAssets(target.home);
       updated.push({ id: target.id, running: running.has(target.id), models: table.length });
     }
     const repairNote = repaired.length
@@ -812,11 +819,7 @@ export class ProductService {
     const temporary = path.join(paths.homePath, `.config-${randomUUID()}.toml`);
     await fs.writeFile(temporary, renderRouterConfig(source, { model: chosen.slug, catalogPath: paths.catalogPath }), { mode: 0o600 });
     await fs.rename(temporary, path.join(paths.homePath, "config.toml"));
-    for (const name of ["auth.json", "skills", "plugins", "requirements.toml", "hooks.json"]) {
-      const sourcePath = path.join(sharedHome, name);
-      try { await fs.access(sourcePath); await linkSharedAsset(sourcePath, path.join(paths.homePath, name)); }
-      catch (error) { if (!["ENOENT", "EEXIST"].includes(error.code)) throw error; }
-    }
+    await this.syncSharedRuntimeAssets(paths.homePath);
     await fs.mkdir(path.join(paths.homePath, "memories"), { recursive: true, mode: 0o700 });
     let imported = null;
     if (importHistory) imported = await this.syncSwitchWindowHistory(paths.homePath, chosen.slug);

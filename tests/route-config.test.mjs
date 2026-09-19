@@ -10,6 +10,13 @@ import {
 const baseConfig = `# user settings
 model = "gpt-6-astra"
 model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "medium"
+model_reasoning_summary = "auto"
+
+[agents]
+enabled = true
+default_subagent_model = "gpt-5.6-terra"
+default_subagent_reasoning_effort = "high"
 
 [projects."/Users/shift/work"]
 trust_level = "trusted"
@@ -26,6 +33,11 @@ test("switches to Agnes without changing unrelated sections", () => {
   assert.match(output, /model-catalog\.agnes\.json/);
   assert.match(output, /\[projects\."\/Users\/shift\/work"\]/);
   assert.match(output, /\[plugins\."example"\]\nenabled = true/);
+  assert.match(output, /^model_reasoning_effort = "medium"$/m);
+  assert.match(output, /^plan_mode_reasoning_effort = "medium"$/m);
+  assert.match(output, /^model_reasoning_summary = "auto"$/m);
+  assert.match(output, /\[agents\][\s\S]*default_subagent_model = "gpt-5\.6-terra"/);
+  assert.match(output, /\[agents\][\s\S]*default_subagent_reasoning_effort = "high"/);
   assert.equal(detectRoute(output), "agnes");
 });
 

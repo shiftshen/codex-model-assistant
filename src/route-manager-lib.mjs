@@ -113,7 +113,7 @@ export async function prepareInstance(routeId, options) {
   await fs.mkdir(userDataPath, { recursive: true, mode: 0o700 });
   await atomicWrite(configPath, rendered, 0o600);
 
-  for (const name of ["auth.json", "skills", "plugins", "requirements.toml", "hooks.json"]) {
+  for (const name of ["auth.json", "AGENTS.md", "skills", "plugins", "requirements.toml", "hooks.json"]) {
     await ensureSharedLink(path.join(sharedHome, name), path.join(homePath, name));
   }
   await ensureLocalDirectory(path.join(homePath, "memories"));

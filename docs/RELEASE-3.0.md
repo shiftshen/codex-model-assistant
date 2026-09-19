@@ -1,5 +1,12 @@
 # Model Router 3.0.0
 
+## 3.0.1 智能一致性修复
+
+- 所有隔离 Codex 窗口共享全局 `AGENTS.md`、skills、plugins、hooks 和 auth。
+- 窗口 config 保留全局 reasoning / plan / `[agents]` 设置，只覆盖模型/provider。
+- 默认开发推理调整为 Medium；子智能体继续使用 Terra + High。
+- 已有隔离环境同步迁移，修复历史 Low reasoning 和缺失 AGENTS 的窗口。
+
 3.0 是 Codex 模型助手的正式品牌升级版本。
 
 ## 重点变化
